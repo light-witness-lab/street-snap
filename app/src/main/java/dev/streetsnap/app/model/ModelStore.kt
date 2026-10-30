@@ -297,6 +297,47 @@ class ModelStore(context: Context) {
     }.getOrNull()
 
     /**
+     * 导入构建期有意 staged 进 assets 的 pose 权重（完整权重构建）：
+     * assets/pose-models/&lt;id&gt;/model.task。普通发布包没有该 asset，安静返回 null，
+     * 正常下载与已有安装继续可用。已存在的有效文件（大小 + SHA-256 匹配）直接复用；
+     * 复制经 .asset-part 暂存并逐字节哈希，通过后才原子改名。
+     */
+    suspend fun installBundledPose(entry: PoseModelEntry): File? = withContext(Dispatchers.IO) {
+        require(PoseModelCatalog.models.contains(entry)) { "未知姿势模型" }
+        val assetPath = "pose-models/${entry.id}/model.task"
+        if (!assetExists(assetPath)) return@withContext null
+        installedPose(entry)?.let { return@withContext it }
+        poseRoot.mkdirs()
+        checkSpace(poseRoot, entry.bytes)
+        val target = poseFile(entry)
+        target.parentFile?.mkdirs()
+        val partial = java.io.File(target.path + ".asset-part")
+        var copied = 0L
+        try {
+            assets.open(assetPath).use { input ->
+                partial.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        copied += count
+                        require(copied <= entry.bytes) { "内置姿势模型超出声明大小" }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+            require(copied == entry.bytes && verify(partial, entry.weight)) { "内置姿势模型校验失败" }
+            target.delete()
+            require(partial.renameTo(target)) { "无法保存内置姿势模型" }
+            target
+        } catch (error: Throwable) {
+            partial.delete()
+            throw error
+        }
+    }
+
+    /**
      * 仅用户显式触发。按序尝试 [ModelSources] 的每个匿名源，经 HTTP Range 从 .part
      * 偏移续传；大小/哈希不符则丢弃 .part 换下一个源。
      */
