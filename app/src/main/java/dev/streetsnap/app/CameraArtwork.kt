@@ -28,6 +28,7 @@ private val artworkBoxes = mapOf(
     CameraModel.SIGMA_FP to Rect(30f, 14f, 150f, 100f),
     CameraModel.PANASONIC_LX100 to Rect(16f, 18f, 156f, 104f),
     CameraModel.NIKON_F3 to Rect(10f, 13f, 168f, 103f),
+    CameraModel.ROLLEI_35 to Rect(28f, 26f, 152f, 94f),
 )
 
 /** Original vector studies of recognisable camera bodies; no downloaded product artwork. */
@@ -47,6 +48,7 @@ internal fun CameraArtwork(camera: CameraModel, modifier: Modifier = Modifier) {
                 CameraModel.SIGMA_FP -> sigmaFp()
                 CameraModel.PANASONIC_LX100 -> lumixLx100()
                 CameraModel.NIKON_F3 -> nikonF3()
+                CameraModel.ROLLEI_35 -> rollei35()
             }
         }
     }
@@ -217,4 +219,27 @@ private fun DrawScope.nikonF3() {
     drawCircle(Color(0xFF171B1C), 3.4f, Offset(34f, 46f)) // shutter release, viewer-left
     lens(90f, 72f, 28f)
     lettering("F3", 132f, 62f, 9f)
+}
+
+/* Rollei 35 (easter egg): the tiny 1966 pocket camera — a near-square silver block
+ * with black leatherette, its collapsible lens offset to the viewer-left and the
+ * selenium meter window high on the viewer-right. No prism, no grip, no hot shoe. */
+private fun DrawScope.rollei35() {
+    // silver shell
+    drawRoundRect(
+        Brush.verticalGradient(listOf(Color(0xFFD8DDDB), Color(0xFF9EA6A4), Color(0xFF7F8887))),
+        Offset(30f, 30f), Size(120f, 62f), CornerRadius(5f))
+    drawRoundRect(bodyEdge, Offset(30f, 30f), Size(120f, 62f), CornerRadius(5f), style = Stroke(1f))
+    // black leatherette centre strip
+    panel(58f, 38f, 46f, 46f, Color(0xFF171B1C), 3f)
+    // selenium meter window, viewer-right
+    panel(111f, 34f, 31f, 12f, Color(0xFF203038), 2f)
+    panel(113f, 36.5f, 13f, 4.5f, Color(0xFF4E7483), 1f)
+    // small viewfinder window beside the meter
+    panel(106f, 50f, 12f, 8f, Color(0xFF101D29), 1.5f)
+    // offset collapsible lens, viewer-left, silver rim
+    lens(61f, 62f, 19f, silver = true)
+    drawCircle(Color(0xFF52595A), 20.2f, Offset(61f, 62f), style = Stroke(1.6f))
+    lettering("Rollei", 96f, 72f, 7.5f, color = Color(0xFF262B2C))
+    lettering("35", 133f, 86f, 8.5f, color = Color(0xFF262B2C))
 }

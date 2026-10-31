@@ -29,8 +29,20 @@ import dev.streetsnap.color.FilmRegistry
 @Composable
 internal fun FilmAdjustments(settings: AppSettings, model: CameraViewModel) {
     val active = FilmRegistry.find(settings.filmId)
+    // T121: film bodies really load a roll into the camera; digital bodies apply the same
+    // recipes as digital film-stock looks. GR never reaches this section (no film tab).
+    val body = BodyCatalog.resolve(settings.cameraBody)
+    val heading = when {
+        body?.filmCamera == true -> "为 ${body.brand} ${body.model} 装一卷"
+        body != null -> "胶片质感配方 · 数字模拟"
+        else -> "胶片配方"
+    }
+    val emptyHint = when {
+        body?.filmCamera == true -> "未装卷 · 当前为镜头原色，选一卷胶片决定色彩"
+        else -> "选择胶片质感，拍下自己的色彩。"
+    }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("胶片配置", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+        Text(heading, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
         TextButton(onClick = { model.setFilm(null) }, modifier = Modifier.heightIn(min = 48.dp)) {
             Text(if (active == null) "未装卷" else "卸下胶片", fontSize = 12.sp)
         }
@@ -53,7 +65,7 @@ internal fun FilmAdjustments(settings: AppSettings, model: CameraViewModel) {
             }
         }
     }
-    Text(active?.description ?: "选择胶片，拍下自己的色彩。", Modifier.padding(vertical = 10.dp),
+    Text(active?.description ?: emptyHint, Modifier.padding(vertical = 10.dp),
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Text("影调里可调颗粒、饱和度等，每卷单独记忆。",
         Modifier.padding(bottom = 10.dp), style = MaterialTheme.typography.labelSmall,

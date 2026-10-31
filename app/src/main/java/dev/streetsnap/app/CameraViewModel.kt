@@ -167,12 +167,24 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             composition.sceneReading.collect { reading ->
                 if (!_settingsLoaded.value) return@collect
                 val settings = _settings.value
-                if (!settings.lookAdviceEnabled || !foreground) return@collect
+                // 快拍模式: no AI suggestion streams at all.
+                if (settings.quickShotMode || !settings.lookAdviceEnabled || !foreground) return@collect
                 val advice = lookAdviser.onFrame(reading, settings.activeLookKey, settings.lookDismissedAt)
                 if (advice != null) {
-                    pendingLookTarget = advice.target
-                    if (trialLook == null) {
-                        _lookAdviceCard.value = LookAdviceCard(advice.key, advice.target.label, advice.target.reason)
+                    // T121: an AI suggestion may never cross brand lines — a Fuji body must
+                    // not be offered the GR's 正片, and the GR cannot be offered any roll.
+                    val body = BodyCatalog.resolve(settings.cameraBody)
+                    val target = advice.target
+                    val legal = if (target.filmId != null) {
+                        BodyCatalog.supportsFilmRolls(body) && FilmRegistry.find(target.filmId) != null
+                    } else {
+                        BodyCatalog.allowsPreset(body, target.preset)
+                    }
+                    if (legal) {
+                        pendingLookTarget = target
+                        if (trialLook == null) {
+                            _lookAdviceCard.value = LookAdviceCard(advice.key, target.label, target.reason)
+                        }
                     }
                 }
             }
@@ -189,11 +201,27 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private suspend fun restoreCameraSettings() {
         val capabilities = camera.state.value.capabilities ?: return
         val saved = _settings.value
-        val focal = FocalLength.fromMm(saved.focalLength) ?: FocalLength.NATIVE
+        // T121: the legal frame is in BOTH the body's focal set and the device's crop
+        // capability. Digital cropping cannot go wider than the native lens, so a body frame
+        // the HAL cannot deliver falls back to the closest supported body frame, never a
+        // frame from a different camera family.
+        val body = BodyCatalog.resolve(saved.cameraBody)
+        val supported = BodyCatalog.focalLengths(body).intersect(capabilities.focalLengthOptions.toSet())
+        val savedFocal = FocalLength.fromMm(saved.focalLength)
+        val bodyDefault = BodyCatalog.defaultFocalLength(body)
+        val target = savedFocal?.takeIf { it in supported }
+            ?: bodyDefault.takeIf { it in supported }
+            ?: supported.minByOrNull { kotlin.math.abs((it.equivalentMm ?: 0) - (savedFocal?.equivalentMm ?: body?.defaultFocalMm ?: 28)) }
+            ?: capabilities.focalLengthOptions.first()
         _controlsRestored.value = false
         try {
-            camera.setFocalLength(focal.takeIf { it in capabilities.focalLengthOptions }
-                ?: capabilities.focalLengthOptions.first())
+            camera.setFocalLength(target)
+            composition.updateFocalLength(target.equivalentMm ?: body?.defaultFocalMm ?: 28)
+            // Persist a real body-frame fallback so chips/EXIF agree with what was applied;
+            // a NATIVE fallback (nothing from the body fits) leaves the body metadata intact.
+            target.equivalentMm?.takeIf { it != saved.focalLength }?.let { reconciled ->
+                update { it.copy(focalLength = reconciled) }
+            }
             camera.setExposureCompensation(saved.exposure.coerceIn(capabilities.exposureCompensationMin, capabilities.exposureCompensationMax))
             val whiteBalance = runCatching { WhiteBalanceMode.valueOf(saved.whiteBalance) }
                 .getOrDefault(WhiteBalanceMode.AUTO)
@@ -257,6 +285,59 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         camera.setFocalLength(focal)
         update { it.copy(focalLength = focal.equivalentMm ?: 0) }
         composition.updateFocalLength(focal.equivalentMm ?: 28)
+    }
+
+    /**
+     * T121: switch the FUNCTIONAL body. The body owns its focal set, colour looks and the
+     * film section, so a switch coerces the active look/focal (GR cannot keep a Fuji
+     * simulation; a film roll unloads on a GR) and applies the body's focal immediately.
+     * [bodyId] is a BodyCatalog id; BodyCatalog.GENERAL_ID means the brand-neutral body.
+     */
+    fun setCameraBody(bodyId: String) {
+        val body = BodyCatalog.resolve(bodyId)
+        val current = _settings.value
+        val coerced = coerceLookForBody(body, current.preset, current.filmId, current.focalLength, lut != null)
+        update {
+            it.copy(cameraBody = BodyCatalog.id(body),
+                preset = coerced.preset, filmId = coerced.filmId, focalLength = coerced.focalLength)
+        }
+        applyColor()
+        // A suggestion card from the old body could now be cross-brand (e.g. GR 正片 on
+        // Fuji); drop it together with any in-flight trial. Discard the trial WITHOUT
+        // restoring its (now cross-brand) preset — the coercion above is authoritative.
+        trialLook = null
+        _lookAdviceCard.value = null
+        pendingLookTarget = null
+        cameraAction {
+            val caps = camera.state.value.capabilities
+            val bodyOptions = BodyCatalog.focalLengths(body)
+            val supported = caps?.let { bodyOptions.intersect(it.focalLengthOptions.toSet()) } ?: bodyOptions.toSet()
+            val target = FocalLength.fromMm(coerced.focalLength)
+            val chosen = target?.takeIf { it in supported }
+                ?: supported.minByOrNull { kotlin.math.abs((it.equivalentMm ?: 0) - coerced.focalLength) }
+                ?: caps?.focalLengthOptions?.firstOrNull()
+            if (chosen != null) {
+                composition.invalidateView()
+                camera.setFocalLength(chosen)
+                composition.updateFocalLength(chosen.equivalentMm ?: coerced.focalLength)
+                chosen.equivalentMm?.takeIf { it != coerced.focalLength }?.let { reconciled ->
+                    update { it.copy(focalLength = reconciled) }
+                }
+            }
+        }
+        if (body?.easterEgg == true) notify("禄来 35 · 35mm 定焦 · 装一卷，上街")
+    }
+
+    fun setNameplateHidden(hidden: Boolean) = update { it.copy(nameplateHidden = hidden) }
+
+    /** 快拍模式 toggle: hides/removes every AI overlay and unbinds the analysis sources. */
+    fun setQuickShotMode(enabled: Boolean) {
+        update { it.copy(quickShotMode = enabled) }
+        if (enabled) {
+            revertTrialLook()
+            _lookAdviceCard.value = null
+            _exposureAdviceCard.value = null
+        }
     }
 
     fun setExposure(index: Int) = latestCameraAction("exposure") {
@@ -366,6 +447,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             notify("请先导入 .cube LUT")
             return
         }
+        // T121 brand guard: every user-visible preset row is already body-scoped, so a
+        // rejection here means a stale/direct call for another camera family's look.
+        val body = BodyCatalog.resolve(_settings.value.cameraBody)
+        if (!BodyCatalog.allowsPreset(body, preset)) {
+            notify("该影调不属于当前机型")
+            return
+        }
         applyPreset(preset)
         onUserPickedLook()
     }
@@ -376,6 +464,11 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setFilm(id: String?) {
+        // T121: the GR has no film section; unloading is always allowed, loading is not.
+        if (id != null && !BodyCatalog.supportsFilmRolls(BodyCatalog.resolve(_settings.value.cameraBody))) {
+            notify("该机型没有胶片选项")
+            return
+        }
         applyFilm(id)
         onUserPickedLook()
     }
@@ -454,6 +547,19 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         val target = pendingLookTarget ?: return
         val card = _lookAdviceCard.value ?: return
         if (trialLook != null || card.trying || card.key != target.key) return
+        // Defensive T121 guard: the suggestion must be legal on the CURRENT body even if
+        // the body changed after the card appeared (setCameraBody normally clears both).
+        val body = BodyCatalog.resolve(_settings.value.cameraBody)
+        val legal = if (target.filmId != null) {
+            BodyCatalog.supportsFilmRolls(body) && FilmRegistry.find(target.filmId) != null
+        } else {
+            BodyCatalog.allowsPreset(body, target.preset)
+        }
+        if (!legal) {
+            _lookAdviceCard.value = null
+            pendingLookTarget = null
+            return
+        }
         val current = _settings.value
         trialLook = TrialLook(current.preset, current.filmId)
         if (target.filmId != null) applyFilm(target.filmId) else applyPreset(target.preset)
@@ -502,7 +608,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         applyColor()
     }
 
-    fun setMascotCamera(id: String?) = update { it.copy(mascotCamera = CameraPreferences.nameplate(id)) }
     fun setCaptureOrientation(id: String) = update { it.copy(captureOrientation = CameraPreferences.orientation(id)) }
 
     fun setCompositionEnabled(enabled: Boolean) = update { it.copy(compositionEnabled = enabled) }
@@ -510,6 +615,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         it.copy(compositionRealtime = enabled, compositionEnabled = true)
     }
     fun requestComposition() {
+        if (_settings.value.quickShotMode) return
         if (!_settings.value.compositionEnabled) setCompositionEnabled(true)
         composition.requestAdvice()
     }
@@ -542,18 +648,23 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun syncPose() = pose.configure(_settings.value.poseAssistantEnabled, foreground)
+    // 快拍模式: pose/composition analysis sources are unbound entirely (no frame reads,
+    // no CPU), not just visually hidden — the source StateFlows flip null and CameraX
+    // rebinds without those ImageReaders.
+    private fun syncPose() = pose.configure(
+        _settings.value.poseAssistantEnabled && !_settings.value.quickShotMode, foreground)
     private fun syncComposition() = composition.configure(
-        _settings.value.compositionModel, _settings.value.compositionEnabled, foreground,
-        realtime = _settings.value.compositionRealtime,
+        _settings.value.compositionModel,
+        _settings.value.compositionEnabled && !_settings.value.quickShotMode, foreground,
+        realtime = _settings.value.compositionRealtime && !_settings.value.quickShotMode,
         focalLengthMm = _settings.value.focalLength.takeIf { it > 0 } ?: 28,
-        lookAdvice = _settings.value.lookAdviceEnabled)
+        lookAdvice = _settings.value.lookAdviceEnabled && !_settings.value.quickShotMode)
 
     /** The analysis stream is bound for the histogram OSD or realtime exposure hints. */
     private fun syncMeter() {
         val wanted = _settingsLoaded.value && foreground && (
             _settings.value.viewfinderOsd != ViewfinderOsd.OFF ||
-                _settings.value.exposureAdviceEnabled)
+                (_settings.value.exposureAdviceEnabled && !_settings.value.quickShotMode))
         lumaMeter.active = wanted
         if (!wanted) _histogram.value = null
     }

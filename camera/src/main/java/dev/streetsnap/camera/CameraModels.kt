@@ -4,7 +4,7 @@ import java.io.File
 
 /** Equivalent focal lengths are crops of the selected rear camera, never optical-lens claims. */
 enum class FocalLength(val equivalentMm: Int?) {
-    NATIVE(null), MM28(28), MM35(35), MM50(50);
+    NATIVE(null), MM24(24), MM28(28), MM35(35), MM40(40), MM50(50), MM75(75);
 
     val label: String get() = equivalentMm?.let { "${it}mm" } ?: "原生视角"
 

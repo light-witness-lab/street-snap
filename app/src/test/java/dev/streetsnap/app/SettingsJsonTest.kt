@@ -29,9 +29,11 @@ class SettingsJsonTest {
     }
 
     @Test fun switchingLooksAndRestartingPreservesTheirIndependentEdits() {
-        var settings = AppSettings(preset = "POSITIVE")
+        // T121: looks live on the body that owns them — POSITIVE on GR, POWDER_BLUE on fp.
+        var settings = AppSettings(cameraBody = "RICOH_GR", preset = "POSITIVE")
             .updateLook { it.copy(saturation = .5f, sharpness = -.25f) }
-        settings = settings.copy(preset = "POWDER_BLUE").updateLook { it.copy(contrast = -.5f, hue = .25f) }
+        settings = settings.copy(cameraBody = "SIGMA_FP", preset = "POWDER_BLUE")
+            .updateLook { it.copy(contrast = -.5f, hue = .25f) }
         val loaded = SettingsJson.decode(SettingsJson.encode(settings))
         assertEquals(-.5f, loaded.activeLook.contrast, 0f)
         assertEquals(.5f, loaded.copy(preset = "POSITIVE").activeLook.saturation, 0f)
@@ -54,6 +56,7 @@ class SettingsJsonTest {
     @Test fun allNewParametersAndCustomLutSurviveRoundTripAndReachRenderer() {
         val look = LookSettings(.75f, .2f, .4f, -.5f, .25f, .5f, -.25f, -.75f, .5f, .75f, -.25f)
         val settings = AppSettings(
+            cameraBody = BodyCatalog.GENERAL_ID,
             preset = "CUSTOM", lutName = "My street.cube", looks = mapOf("CUSTOM" to look),
             hdfEnabled = true, hdfStrength = .6f, whiteBalance = "INCANDESCENT",
             whiteBalanceAmber = -4, whiteBalanceGreen = 7,
@@ -105,7 +108,7 @@ class SettingsJsonTest {
     @Test fun malformedDocumentsRecoverAndUnrelatedValidFieldsSurviveBadLookEntries() {
         assertEquals(AppSettings(), SettingsJson.decode("{broken"))
         assertEquals(AppSettings(), SettingsJson.decode(null))
-        val settings = SettingsJson.decode("""{"version":2,"preset":"MONO","focalLength":50,"looks":{"MONO":false,"POSITIVE":{"contrast":0.5}}}""")
+        val settings = SettingsJson.decode("""{"version":2,"cameraBody":"GENERAL","preset":"ORIGINAL","focalLength":50,"looks":{"MONO":false,"POSITIVE":{"contrast":0.5}}}""")
         assertEquals(50, settings.focalLength)
         assertEquals(LookSettings(), settings.activeLook)
         assertEquals(.5f, settings.copy(preset = "POSITIVE").activeLook.contrast, 0f)
@@ -114,6 +117,7 @@ class SettingsJsonTest {
     @Test fun selectingFilmUsesItsAuthoredRecipeWithoutOverwritingCameraControls() {
         for (film in FilmRegistry.entries) {
             val settings = AppSettings(
+                cameraBody = BodyCatalog.GENERAL_ID,
                 preset = "CUSTOM", filmId = film.id, lutName = "Street.cube",
                 whiteBalance = "DAYLIGHT", whiteBalanceAmber = 2, whiteBalanceGreen = -1,
                 hdfEnabled = true, hdfStrength = .55f,
@@ -132,7 +136,8 @@ class SettingsJsonTest {
         val day = FilmRegistry.find("DAY_01")!!
         val slowDay = FilmRegistry.find("NEG_01")!!
         assertEquals(day.basePreset, slowDay.basePreset)
-        val original = AppSettings(preset = day.basePreset.name)
+        // SUNNY and the film rolls live on the brand-neutral general body (T121).
+        val original = AppSettings(cameraBody = BodyCatalog.GENERAL_ID, preset = day.basePreset.name)
             .updateLook { it.copy(grain = .9f, contrast = -.8f) }
         val settings = original.copy(filmId = day.id)
             .updateLook { it.copy(grain = .6f, saturation = -.4f) }
@@ -152,7 +157,10 @@ class SettingsJsonTest {
 
     @Test fun resettingFilmRestoresItsRecipeAndPreservesOtherLooksAndCameraPreferences() {
         val film = FilmRegistry.find("DAY_01")!!
-        val settings = AppSettings(preset = "NEGATIVE", mascotCamera = "NIKON_F3", captureOrientation = "LANDSCAPE")
+        // T121: the fp body offers POWDER_BLUE and has a film section, so the whole
+        // combination survives a v5 round trip without coercion.
+        val settings = AppSettings(cameraBody = "SIGMA_FP", preset = "POWDER_BLUE",
+                captureOrientation = "LANDSCAPE")
             .updateLook { it.copy(contrast = -.4f) }
             .copy(filmId = "PORTRAIT_01").updateLook { it.copy(saturation = .3f) }
             .copy(filmId = film.id).updateLook { it.copy(grain = 0f, sharpness = 1f) }
@@ -160,7 +168,7 @@ class SettingsJsonTest {
         assertEquals(film.defaults, settings.colorRecipe())
         assertEquals(-.4f, settings.copy(filmId = null).activeLook.contrast, 0f)
         assertEquals(.3f, settings.copy(filmId = "PORTRAIT_01").activeLook.saturation, 0f)
-        assertEquals("NIKON_F3", settings.mascotCamera)
+        assertEquals("SIGMA_FP", settings.cameraBody)
         assertEquals("LANDSCAPE", settings.captureOrientation)
         assertEquals(settings, SettingsJson.decode(SettingsJson.encode(settings)))
     }
@@ -183,6 +191,9 @@ class SettingsJsonTest {
     @Test fun upgradingVersionThreeDropsDecorationAndPreservesCaptureAndFilmEdits() {
         val legacy = """{"version":3,"filmFrame":"WHITE","dateStamp":"DATE_TIME","preset":"NEGATIVE","filmId":"NIGHT_01","iso":640,"exposureTimeNs":16000000,"focalLength":50,"whiteBalance":"DAYLIGHT","looks":{"FILM:NIGHT_01":{"grain":0.6,"saturation":-0.3}}}"""
         val loaded = SettingsJson.decode(legacy)
+        // T121: NEGATIVE belongs to the GR, which has no film section — a pre-T121 roll
+        // survives by migrating the document to the brand-neutral general body.
+        assertEquals(BodyCatalog.GENERAL_ID, loaded.cameraBody)
         assertEquals("NIGHT_01", loaded.filmId)
         assertEquals(.6f, loaded.activeLook.grain, 0f)
         assertEquals(-.3f, loaded.activeLook.saturation, 0f)
@@ -190,55 +201,115 @@ class SettingsJsonTest {
         assertEquals(16_000_000L, loaded.exposureTimeNs)
         assertEquals(50, loaded.focalLength)
         assertEquals("DAYLIGHT", loaded.whiteBalance)
-        // Pre-T19 documents have no nameplate field; null now means "follow the active look".
-        assertNull(loaded.mascotCamera)
+        assertFalse(loaded.nameplateHidden)
         assertEquals("AUTO", loaded.captureOrientation)
 
         val saved = JSONObject(SettingsJson.encode(loaded))
-        assertEquals(4, saved.getInt("version"))
+        assertEquals(5, saved.getInt("version"))
         assertFalse(saved.has("filmFrame"))
         assertFalse(saved.has("dateStamp"))
+        assertFalse(saved.has("mascotCamera"))
         assertEquals(loaded, SettingsJson.decode(saved.toString()))
     }
 
-    @Test fun everyNameplateChoiceAndCaptureDirectionSurviveRestart() {
-        // null = follow the active look, HIDDEN = no nameplate, camera ids = pinned body.
-        val mascots = listOf("RICOH_GR", "FUJIFILM_X100VI", "SIGMA_FP", "PANASONIC_LX100", "NIKON_F3",
-            CameraPreferences.HIDDEN, null)
-        for (mascot in mascots) for (orientation in listOf("AUTO", "LANDSCAPE", "PORTRAIT")) {
-            val settings = AppSettings(mascotCamera = mascot, captureOrientation = orientation,
-                preset = "POWDER_BLUE", whiteBalanceAmber = 3)
-            assertEquals(settings, SettingsJson.decode(SettingsJson.encode(settings)))
+    @Test fun everyBodyChoiceAndCaptureDirectionSurviveRestart() {
+        // T121: each body is tested with a look it actually offers and its own default
+        // focal — anything else would be coerced on decode rather than round-tripped.
+        val bodies = listOf(
+            Triple(BodyCatalog.GENERAL_ID, "SUNNY", 28),
+            Triple("RICOH_GR", "POSITIVE", 28),
+            Triple("FUJIFILM_X100VI", "CLASSIC_CHROME", 35),
+            Triple("SIGMA_FP", "POWDER_BLUE", 35),
+            Triple("PANASONIC_LX100", "LUMIX_NATURAL", 24),
+            Triple("NIKON_F3", "ORIGINAL", 50),
+            Triple("ROLLEI_35", "ORIGINAL", 35),
+        )
+        for ((body, preset, focal) in bodies) for (orientation in listOf("AUTO", "LANDSCAPE", "PORTRAIT")) {
+            for (hidden in listOf(false, true)) {
+                val settings = AppSettings(cameraBody = body, preset = preset, focalLength = focal,
+                    nameplateHidden = hidden, captureOrientation = orientation, whiteBalanceAmber = 3)
+                assertEquals(settings, SettingsJson.decode(SettingsJson.encode(settings)))
+            }
         }
     }
 
-    @Test fun missingOrNullNameplateMeansFollowLookWhileHiddenIsAString() {
-        // A legacy document without the field follows the active look (T19 migration)...
+    @Test fun legacyMascotPinsMigrateToFunctionalBodiesAndHiddenToNameplateFlag() {
+        // A legacy pinned mascot becomes the functional body...
+        val pinned = SettingsJson.decode("""{"version":4,"mascotCamera":"FUJIFILM_X100VI","preset":"CLASSIC_CHROME"}""")
+        assertEquals("FUJIFILM_X100VI", pinned.cameraBody)
+        assertFalse(pinned.nameplateHidden)
+        // ...the legacy HIDDEN string flips nameplateHidden on while the body follows the look...
+        val hidden = SettingsJson.decode("""{"version":4,"mascotCamera":"HIDDEN","preset":"POSITIVE"}""")
+        assertTrue(hidden.nameplateHidden)
+        assertEquals("RICOH_GR", hidden.cameraBody)
+        // ...a missing or null field leaves the nameplate shown and derives the body normally.
         val legacy = SettingsJson.decode("""{"version":2,"preset":"SUNNY"}""")
-        assertNull(legacy.mascotCamera)
+        assertFalse(legacy.nameplateHidden)
+        assertEquals(BodyCatalog.GENERAL_ID, legacy.cameraBody)
         assertEquals("AUTO", legacy.captureOrientation)
-        // ...and so does an explicit JSON null, which used to mean "hidden" before T19.
         val follow = SettingsJson.decode("""{"version":4,"mascotCamera":null,"captureOrientation":"PORTRAIT"}""")
-        assertNull(follow.mascotCamera)
+        assertFalse(follow.nameplateHidden)
+        assertEquals(BodyCatalog.GENERAL_ID, follow.cameraBody)
         assertEquals("PORTRAIT", follow.captureOrientation)
         assertEquals(follow, SettingsJson.decode(SettingsJson.encode(follow)))
-        // The hidden state is the dedicated HIDDEN string, encoded verbatim rather than as null.
-        val hiddenJson = JSONObject(SettingsJson.encode(AppSettings(mascotCamera = CameraPreferences.HIDDEN)))
-        assertEquals(CameraPreferences.HIDDEN, hiddenJson.getString("mascotCamera"))
-        val hidden = SettingsJson.decode(hiddenJson.toString())
-        assertEquals(CameraPreferences.HIDDEN, hidden.mascotCamera)
     }
 
     @Test fun unknownCameraPreferencesRecoverWithoutDiscardingTheSelectedLook() {
-        val settings = SettingsJson.decode("""{"version":4,"mascotCamera":"REMOVED_CAMERA","captureOrientation":"SIDEWAYS","preset":"POSITIVE","looks":{"POSITIVE":{"contrast":0.5}}}""")
-        // An unknown body id recovers to follow-look (null), never to a hard-coded body.
-        assertNull(settings.mascotCamera)
+        val settings = SettingsJson.decode("""{"version":5,"cameraBody":"REMOVED_CAMERA","captureOrientation":"SIDEWAYS","preset":"POSITIVE","looks":{"POSITIVE":{"contrast":0.5}}}""")
+        // An unknown explicit body id recovers to the body that owns the saved look (GR),
+        // never to a blank general body that would silently swap the user's colours.
+        assertEquals("RICOH_GR", settings.cameraBody)
         assertEquals("AUTO", settings.captureOrientation)
         assertEquals("POSITIVE", settings.preset)
         assertEquals(.5f, settings.activeLook.contrast, 0f)
-        val encoded = SettingsJson.decode(SettingsJson.encode(AppSettings(mascotCamera = "UNKNOWN", captureOrientation = "UNKNOWN")))
-        assertNull(encoded.mascotCamera)
+        // Encode normalises unknown ids to GENERAL; a default POSITIVE look then coerces
+        // to the general body's ORIGINAL.
+        val encoded = SettingsJson.decode(SettingsJson.encode(AppSettings(cameraBody = "UNKNOWN", captureOrientation = "UNKNOWN")))
+        assertEquals(BodyCatalog.GENERAL_ID, encoded.cameraBody)
+        assertEquals("ORIGINAL", encoded.preset)
         assertEquals("AUTO", encoded.captureOrientation)
+    }
+
+    @Test fun quickShotModeIsOnByDefaultAndSurvivesRestartAndLegacyUpgrade() {
+        assertTrue(AppSettings().quickShotMode)
+        // Legacy documents without the field opt INTO quick mode (the new-user default)...
+        assertTrue(SettingsJson.decode("""{"version":4,"preset":"MONO"}""").quickShotMode)
+        // ...but an explicit pro-mode choice survives round trips.
+        val pro = AppSettings(quickShotMode = false, compositionEnabled = true, compositionRealtime = true)
+        assertFalse(SettingsJson.decode(SettingsJson.encode(pro)).quickShotMode)
+        assertEquals(pro, SettingsJson.decode(SettingsJson.encode(pro)))
+    }
+
+    @Test fun bodyCoercionStripsCrossBrandLooksAndFilmsAndForcesLegalFocals() {
+        // GR with a Fuji simulation + loaded roll + 35mm: everything illegal resets to GR.
+        val gr = SettingsJson.decode(
+            """{"version":5,"cameraBody":"RICOH_GR","preset":"CLASSIC_CHROME","filmId":"NIGHT_01","focalLength":35}""")
+        assertEquals("POSITIVE", gr.preset)
+        assertNull(gr.filmId)
+        assertEquals(28, gr.focalLength)
+        // GR keeps its own two frames...
+        assertEquals(40, SettingsJson.decode(
+            """{"version":5,"cameraBody":"RICOH_GR","preset":"NEGATIVE","focalLength":40}""").focalLength)
+        // ...Fuji keeps simulations, rolls and its 35/50 frames...
+        val fuji = SettingsJson.decode(
+            """{"version":5,"cameraBody":"FUJIFILM_X100VI","preset":"ACROS","filmId":"NIGHT_01","focalLength":50}""")
+        assertEquals("ACROS", fuji.preset)
+        assertEquals("NIGHT_01", fuji.filmId)
+        assertEquals(50, fuji.focalLength)
+        assertEquals(35, SettingsJson.decode(
+            """{"version":5,"cameraBody":"FUJIFILM_X100VI","preset":"CLASSIC_CHROME","focalLength":28}""").focalLength)
+        // ...the Rollei 35 easter egg has exactly one frame: 35mm.
+        val rollei = SettingsJson.decode(
+            """{"version":5,"cameraBody":"ROLLEI_35","preset":"ORIGINAL","filmId":"NIGHT_01","focalLength":50}""")
+        assertEquals(35, rollei.focalLength)
+        assertEquals("NIGHT_01", rollei.filmId)
+        // LX100 spans the documented 24–75 zoom; fp keeps a free 28/35/50 set.
+        assertEquals(75, SettingsJson.decode(
+            """{"version":5,"cameraBody":"PANASONIC_LX100","preset":"LUMIX_NATURAL","focalLength":75}""").focalLength)
+        assertEquals(24, SettingsJson.decode(
+            """{"version":5,"cameraBody":"PANASONIC_LX100","preset":"LUMIX_MONO","focalLength":40}""").focalLength)
+        assertEquals(50, SettingsJson.decode(
+            """{"version":5,"cameraBody":"SIGMA_FP","preset":"POWDER_BLUE","focalLength":50}""").focalLength)
     }
 
     @Test fun viewfinderOsdDefaultsOffAndEveryModeSurvivesRestart() {
