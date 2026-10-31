@@ -285,7 +285,7 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                                 adjustmentTab, { adjustmentTab = it }, sidePanel = true,
                                 panelHeight = 264.dp,
                                 importLut = { lutPicker.launch(arrayOf("*/*")) },
-                                openMascotPicker = { showBodyPicker = true },
+                                openBodyPicker = { showBodyPicker = true },
                                 compositionState = compositionState,
                                 latestPhoto = latestPhoto, openPhoto = activity::openPhoto)
                         }
@@ -375,7 +375,7 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                                 onTab = { adjustmentTab = it },
                                 state = state, settings = settings, importing = lutLoading, model = model,
                                 importLut = { lutPicker.launch(arrayOf("*/*")) },
-                                openMascotPicker = { showBodyPicker = true },
+                                openBodyPicker = { showBodyPicker = true },
                                 compositionState = compositionState)
                         }
                     } else {
@@ -394,7 +394,7 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                                 onTab = { adjustmentTab = it },
                                 state = state, settings = settings, importing = lutLoading, model = model,
                                 importLut = { lutPicker.launch(arrayOf("*/*")) },
-                                openMascotPicker = { showBodyPicker = true },
+                                openBodyPicker = { showBodyPicker = true },
                                 compositionState = compositionState)
                         }
                     }
@@ -1658,7 +1658,7 @@ private fun ControlBottomSheet(
     importing: Boolean,
     model: CameraViewModel,
     importLut: () -> Unit,
-    openMascotPicker: () -> Unit,
+    openBodyPicker: () -> Unit,
     compositionState: CompositionUiState,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1666,7 +1666,7 @@ private fun ControlBottomSheet(
         containerColor = Color.Transparent, scrimColor = Color.Black.copy(alpha = .55f),
         contentWindowInsets = { androidx.compose.foundation.layout.WindowInsets(0) }) {
         AdjustmentPanel(state, settings, importing, model, tab, onTab = onTab, importLut,
-            openMascotPicker, compositionState,
+            openBodyPicker, compositionState,
             Modifier.fillMaxWidth().height(500.dp).navigationBarsPadding()
                 .padding(horizontal = 10.dp).padding(bottom = 10.dp))
     }
@@ -1686,7 +1686,7 @@ private fun ShootingControls(
     sidePanel: Boolean,
     panelHeight: Dp,
     importLut: () -> Unit,
-    openMascotPicker: () -> Unit,
+    openBodyPicker: () -> Unit,
     compositionState: CompositionUiState,
     latestPhoto: Uri?,
     openPhoto: (Uri) -> Unit,
@@ -1802,7 +1802,7 @@ private fun ShootingControls(
             }
         }
         if (adjustmentTab != null) {
-            AdjustmentPanel(state, settings, importing, model, adjustmentTab, onTab, importLut, openMascotPicker, compositionState,
+            AdjustmentPanel(state, settings, importing, model, adjustmentTab, onTab, importLut, openBodyPicker, compositionState,
                 if (sidePanel) Modifier.weight(1f).fillMaxWidth() else Modifier.fillMaxWidth()
                     .height(panelHeight + if (adjustmentTab == AdjustmentTab.LOOK) 48.dp else 0.dp))
         } else if (sidePanel) Spacer(Modifier.weight(1f))
@@ -1898,7 +1898,7 @@ private fun AdjustmentPanel(
     tab: AdjustmentTab,
     onTab: (AdjustmentTab?) -> Unit,
     importLut: () -> Unit,
-    openMascotPicker: () -> Unit,
+    openBodyPicker: () -> Unit,
     compositionState: CompositionUiState,
     modifier: Modifier,
 ) {
@@ -1925,7 +1925,7 @@ private fun AdjustmentPanel(
                 AdjustmentTab.FILM -> if (BodyCatalog.supportsFilmRolls(activeBody)) FilmAdjustments(settings, model)
                     else LookAdjustments(settings, importing, model, importLut)
                 AdjustmentTab.WHITE_BALANCE -> WhiteBalanceAdjustments(state, settings, model)
-                AdjustmentTab.SHOOTING -> ShootingAdjustments(state, settings, model, openMascotPicker, compositionState)
+                AdjustmentTab.SHOOTING -> ShootingAdjustments(state, settings, model, openBodyPicker, compositionState)
             }
         }
     }
@@ -2216,7 +2216,7 @@ private fun StepButton(text: String, description: String, enabled: Boolean, onCl
 
 @Composable
 private fun ShootingAdjustments(state: CameraState, settings: AppSettings, model: CameraViewModel,
-    openMascotPicker: () -> Unit, compositionState: CompositionUiState) {
+    openBodyPicker: () -> Unit, compositionState: CompositionUiState) {
     val controlsRestored by model.controlsRestored.collectAsStateWithLifecycle()
     val poseState by model.pose.state.collectAsStateWithLifecycle()
     val capabilities = state.capabilities
@@ -2322,7 +2322,7 @@ private fun ShootingAdjustments(state: CameraState, settings: AppSettings, model
         CompositionAssistantControls(compositionState, settings, model, state)
         PoseAssistantControls(poseState, settings, model)
     }
-    TextButton(onClick = openMascotPicker, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+    TextButton(onClick = openBodyPicker, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
         Text("相机机型与铭牌设置", fontSize = 12.sp)
     }
     Text("参数自动记忆。音量键可直接拍照。", Modifier.padding(vertical = 10.dp),
