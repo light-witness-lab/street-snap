@@ -52,12 +52,18 @@ data class AppSettings(
     val level: Boolean = true,
     // Viewfinder OSD cycle: OFF (default, pure viewfinder) / HISTOGRAM / PARAMS (histogram + exposure readout).
     val viewfinderOsd: String = ViewfinderOsd.OFF,
-    val preset: String = "ORIGINAL",
+    val preset: String = "POSITIVE",
     val filmId: String? = null,
-    // null = the nameplate follows the active look family; "HIDDEN" = no nameplate; a
-    // camera id = a manually pinned body. See CameraPreferences.nameplate.
-    val mascotCamera: String? = null,
+    // T121: the active, FUNCTIONAL camera body (BodyCatalog id; GENERAL for brand-neutral
+    // looks). It drives the legal look list, focal set and film-section visibility.
+    val cameraBody: String = "RICOH_GR",
+    // T121: the top nameplate can still be hidden for a bigger viewfinder; the body itself
+    // stays selectable from the shooting settings / 影调 body strip.
+    val nameplateHidden: Boolean = false,
     val captureOrientation: String = CameraPreferences.DEFAULT_ORIENTATION,
+    // T121 快拍模式: pose/composition/AI advice fully off (sources unbound), filters + HDF
+    // remain. On by default for everyone — pro features live behind the mode toggle.
+    val quickShotMode: Boolean = true,
     val compositionEnabled: Boolean = false,
     val compositionRealtime: Boolean = false,
     val compositionModel: String = D1ModelCatalog.DEFAULT_MODEL_ID,
@@ -117,22 +123,13 @@ data class AppSettings(
 internal object CameraPreferences {
     const val DEFAULT_ORIENTATION = "AUTO"
 
-    /** Explicitly hides the viewfinder nameplate. */
+    /** Legacy pre-T121 value that hid the whole nameplate. */
     const val HIDDEN = "HIDDEN"
-    private val mascots = setOf("RICOH_GR", "FUJIFILM_X100VI", "SIGMA_FP", "PANASONIC_LX100", "NIKON_F3")
+    private val bodies = CameraModel.entries.map { it.name }.toSet() + BodyCatalog.GENERAL_ID
     private val orientations = setOf("AUTO", "LANDSCAPE", "PORTRAIT")
 
-    /**
-     * null = follow the active look/film family; [HIDDEN] = no nameplate; a known camera
-     * id = that pinned body. Legacy docs that pinned a body keep it; unknown ids recover
-     * to follow-look. (The pre-T19 explicit "hidden" value was JSON null, which now means
-     * follow-look — a deliberate, documented migration.)
-     */
-    fun nameplate(id: String?): String? = when {
-        id == null || id == HIDDEN -> id
-        id in mascots -> id
-        else -> null
-    }
+    /** A known body id or the synthetic general body; unknown ids recover to general. */
+    fun body(id: String?): String = id?.takeIf { it in bodies } ?: BodyCatalog.GENERAL_ID
     fun orientation(id: String?): String = id?.takeIf { it in orientations } ?: DEFAULT_ORIENTATION
 }
 
@@ -170,7 +167,7 @@ class SettingsRepository(private val context: Context) {
 
 internal object SettingsJson {
     fun encode(settings: AppSettings): String = JSONObject().apply {
-        put("version", 4)
+        put("version", 5)
         put("focalLength", settings.focalLength)
         put("exposure", settings.exposure)
         put("focus", settings.focus)
@@ -182,7 +179,9 @@ internal object SettingsJson {
         put("viewfinderOsd", ViewfinderOsd.mode(settings.viewfinderOsd))
         put("preset", settings.preset)
         put("filmId", settings.filmId ?: JSONObject.NULL)
-        put("mascotCamera", CameraPreferences.nameplate(settings.mascotCamera) ?: JSONObject.NULL)
+        put("cameraBody", CameraPreferences.body(settings.cameraBody))
+        put("nameplateHidden", settings.nameplateHidden)
+        put("quickShotMode", settings.quickShotMode)
         put("captureOrientation", CameraPreferences.orientation(settings.captureOrientation))
         put("compositionEnabled", settings.compositionEnabled)
         put("compositionRealtime", settings.compositionRealtime)
@@ -226,8 +225,47 @@ internal object SettingsJson {
         if (value == null) return AppSettings()
         return runCatching {
             val json = JSONObject(value)
-            val preset = json.optString("preset", "ORIGINAL")
+            // First parse the pre-migration creative choice so the owning body can be derived.
+            val legacyPreset = json.optString("preset", "ORIGINAL")
                 .takeIf { name -> ColorPreset.entries.any { it.name == name } } ?: "ORIGINAL"
+            val legacyMascot = if (!json.has("mascotCamera") || json.isNull("mascotCamera")) null
+                else json.optString("mascotCamera")
+            val lutName = if (json.isNull("lutName")) null
+                else json.optString("lutName").takeIf(String::isNotBlank)?.take(120)
+            val rawFilmId = if (json.isNull("filmId")) null
+                else json.optString("filmId").takeIf { FilmRegistry.find(it) != null }
+            // v5 stores the body explicitly; older docs recover it from a pinned mascot or
+            // from the look family they used (general looks land on the general body).
+            val body = when {
+                json.has("cameraBody") && !json.isNull("cameraBody") -> {
+                    val rawBody = json.optString("cameraBody")
+                    if (rawBody == BodyCatalog.GENERAL_ID) null
+                    else {
+                        // An unknown explicit id (renamed/removed body): keep the creative
+                        // intent via the body that owns the saved look, never a blank body.
+                        BodyCatalog.resolve(rawBody) ?: BodyCatalog.bodyForPresetName(legacyPreset)
+                    }
+                }
+                legacyMascot != null && legacyMascot != CameraPreferences.HIDDEN ->
+                    // A deliberately pinned body always wins, even if that now unloads a roll
+                    // (a pre-T121 GR pin with a film loaded loses the roll, keeps the GR).
+                    BodyCatalog.resolve(legacyMascot) ?: BodyCatalog.bodyForPresetName(legacyPreset)
+                else -> {
+                    val owner = BodyCatalog.bodyForPresetName(legacyPreset)
+                    // Pre-T121 docs chose looks and rolls independently. If a roll is loaded
+                    // and the look's owning body has no film section (GR), the roll survives
+                    // by migrating to the brand-neutral general body.
+                    if (rawFilmId != null && owner != null && !BodyCatalog.supportsFilmRolls(owner)) null
+                    else owner
+                }
+            }
+            val nameplateHidden = json.optBoolean("nameplateHidden", legacyMascot == CameraPreferences.HIDDEN)
+            val rawFocal = json.optInt("focalLength", 28)
+                .takeIf { it in listOf(0, 24, 28, 35, 40, 50, 75) } ?: 28
+            // Force the upgraded look/focal back onto what the resolved body actually offers:
+            // a GR can no longer keep a Fuji simulation, a film roll unloads on GR, etc.
+            val coercion = coerceLookForBody(
+                body, legacyPreset, rawFilmId, rawFocal, lutLoaded = !lutName.isNullOrBlank())
             val savedLooks = json.optJSONObject("looks")
             val looks = if (savedLooks != null) {
                 val presetLooks = ColorPreset.entries.mapNotNull { choice ->
@@ -241,10 +279,10 @@ internal object SettingsJson {
                 }
                 (presetLooks + filmLooks).toMap()
             } else if (json.optInt("version", 1) == 1) {
-                mapOf(preset to decodeLook(json))
+                mapOf(legacyPreset to decodeLook(json))
             } else emptyMap()
             AppSettings(
-                focalLength = json.optInt("focalLength", 28).takeIf { it in listOf(0, 28, 35, 50) } ?: 28,
+                focalLength = coercion.focalLength,
                 exposure = json.optInt("exposure", 0),
                 focus = json.optString("focus", "AUTO").takeIf { it == "MANUAL" } ?: "AUTO",
                 focusDiopters = json.amount("focusDiopters", 0f, 0f, 100f),
@@ -253,17 +291,17 @@ internal object SettingsJson {
                 grid = json.optBoolean("grid", true),
                 level = json.optBoolean("level", true),
                 viewfinderOsd = ViewfinderOsd.mode(json.optString("viewfinderOsd").takeIf { it.isNotEmpty() }),
-                preset = preset,
-                filmId = if (json.isNull("filmId")) null else json.optString("filmId")
-                    .takeIf { FilmRegistry.find(it) != null },
-                mascotCamera = if (!json.has("mascotCamera") || json.isNull("mascotCamera")) null
-                    else CameraPreferences.nameplate(json.optString("mascotCamera")),
+                preset = coercion.preset,
+                filmId = coercion.filmId,
+                cameraBody = CameraPreferences.body(BodyCatalog.id(body)),
+                nameplateHidden = nameplateHidden,
+                quickShotMode = json.optBoolean("quickShotMode", true),
                 captureOrientation = CameraPreferences.orientation(json.optString("captureOrientation")),
                 compositionEnabled = json.optBoolean("compositionEnabled", false),
                 compositionRealtime = json.optBoolean("compositionRealtime", false),
                 compositionModel = D1ModelCatalog.find(json.optString("compositionModel"))?.id ?: D1ModelCatalog.DEFAULT_MODEL_ID,
                 looks = looks,
-                lutName = if (json.isNull("lutName")) null else json.optString("lutName").takeIf(String::isNotBlank)?.take(120),
+                lutName = lutName,
                 hdfEnabled = json.optBoolean("hdfEnabled", false),
                 hdfStrength = json.amount("hdfStrength", .4f),
                 hdrEnabled = json.optBoolean("hdrEnabled", false),

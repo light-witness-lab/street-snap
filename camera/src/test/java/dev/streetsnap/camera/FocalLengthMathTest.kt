@@ -25,7 +25,10 @@ class FocalLengthMathTest {
 
     @Test fun cropCannotProvideWiderViewThanNativeLens() {
         assertNull(FocalLengthMath.zoomRatio(28, 30.0, 10f))
-        assertEquals(listOf(FocalLength.MM35, FocalLength.MM50), FocalLengthMath.availableOptions(30.0, 10f))
+        // T121: the catalog gained 24/40/75mm crops; a 30mm-native device with 10x zoom
+        // supports every longer step from 35mm up.
+        assertEquals(listOf(FocalLength.MM35, FocalLength.MM40, FocalLength.MM50, FocalLength.MM75),
+            FocalLengthMath.availableOptions(30.0, 10f))
     }
 
     @Test fun zoomBoundAndNativeEqualityAreHandled() {

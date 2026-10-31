@@ -196,10 +196,17 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
     var denied by remember { mutableStateOf(false) }
     var adjustmentTab by remember { mutableStateOf<AdjustmentTab?>(null) }
     var showCapabilities by remember { mutableStateOf(false) }
-    var showMascotPicker by remember { mutableStateOf(false) }
+    var showBodyPicker by remember { mutableStateOf(false) }
+    // GR (and other no-film bodies) must not keep the 胶片 tab open across a body switch.
+    LaunchedEffect(settings.cameraBody) {
+        if (adjustmentTab == AdjustmentTab.FILM &&
+            !BodyCatalog.supportsFilmRolls(BodyCatalog.resolve(settings.cameraBody))) {
+            adjustmentTab = AdjustmentTab.LOOK
+        }
+    }
     var retry by remember { mutableIntStateOf(0) }
     val snackbar = remember { SnackbarHostState() }
-    BackHandler(enabled = adjustmentTab != null && !showCapabilities && !showMascotPicker) { adjustmentTab = null }
+    BackHandler(enabled = adjustmentTab != null && !showCapabilities && !showBodyPicker) { adjustmentTab = null }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         permitted = it
         denied = !it
@@ -236,7 +243,7 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
             snackbar.showSnackbar(notice.text, duration = SnackbarDuration.Short)
         }
     }
-    val currentReady by rememberUpdatedState(permitted && state.isReady && !showCapabilities && !showMascotPicker)
+    val currentReady by rememberUpdatedState(permitted && state.isReady && !showCapabilities && !showBodyPicker)
     DisposableEffect(activity, model) {
         activity.volumeShutter = { trigger ->
             if (currentReady) {
@@ -278,7 +285,7 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                                 adjustmentTab, { adjustmentTab = it }, sidePanel = true,
                                 panelHeight = 264.dp,
                                 importLut = { lutPicker.launch(arrayOf("*/*")) },
-                                openMascotPicker = { showMascotPicker = true },
+                                openMascotPicker = { showBodyPicker = true },
                                 compositionState = compositionState,
                                 latestPhoto = latestPhoto, openPhoto = activity::openPhoto)
                         }
@@ -286,9 +293,9 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                         // Phone portrait: a camera-back layout. Nameplate, the exact 3:4
                         // viewfinder screen and an opaque control cluster stack edge to
                         // edge, so there is no letterbox void between picture and controls.
-                        // Nameplate: follow-look by default (the body tracks the active
-                        // look/film family), a pinned body, or hidden entirely.
-                        val hideNameplate = settings.mascotCamera == CameraPreferences.HIDDEN
+                        // T121: the nameplate is the FUNCTIONAL active body (drives focal
+                        // lengths, looks and the film section), or hidden for a bigger frame.
+                        val hideNameplate = settings.nameplateHidden
                         // Tall enough for the body card to read as a camera plate rather than
                         // a flattened strip (T22: 48dp crowded the 74x40 artwork).
                         val nameplateHeight = if (hideNameplate) 0.dp else 80.dp
@@ -314,29 +321,25 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                             // its own for the landscape / hidden-nameplate floating path.
                             val nameplateLookCard by model.lookAdviceCard.collectAsStateWithLifecycle()
                             if (!hideNameplate) {
-                                val following = settings.mascotCamera == null
+                                val nameplateCamera = BodyCatalog.resolve(settings.cameraBody)
                                 val activePreset = settings.colorRecipe().preset
                                 val lookName = settings.filmId?.let { FilmRegistry.find(it)?.displayName }
                                     ?: activePreset.displayName
-                                val familyCamera = if (following) cameraForLook(activePreset.name) else null
-                                val pinnedCamera = if (following) null else CameraModel.fromId(settings.mascotCamera)
-                                val nameplateCamera = familyCamera ?: pinnedCamera
+                                val focalLine = nameplateCamera?.let { body ->
+                                    when {
+                                        // A zoom span reads as a range ("24–75mm"); short fixed sets
+                                        // stay enumerated ("28／40mm"); single-focal easter eggs
+                                        // show just the one frame.
+                                        body.focalMm.size >= 4 -> "${body.focalMm.first()}–${body.focalMm.last()}mm"
+                                        else -> body.focalMm.joinToString("／") { "${it}mm" }
+                                    }
+                                } ?: "28／35／50mm"
                                 ViewfinderNameplate(
                                     camera = nameplateCamera,
-                                    title = when {
-                                        following && nameplateCamera == null -> lookName
-                                        following -> nameplateCamera!!.model
-                                        else -> pinnedCamera?.model ?: lookName
-                                    },
-                                    subtitle = when {
-                                        following && nameplateCamera == null -> "通用影调"
-                                        following -> lookName
-                                        else -> pinnedCamera?.brand.orEmpty()
-                                    },
-                                    onPick = {
-                                        if (following) adjustmentTab = AdjustmentTab.LOOK
-                                        else showMascotPicker = true
-                                    },
+                                    title = nameplateCamera?.model ?: "通用",
+                                    subtitle = if (nameplateCamera != null)
+                                        "${nameplateCamera.brand} · $focalLine" else "通用影调 · $lookName",
+                                    onPick = { showBodyPicker = true },
                                     modifier = Modifier.fillMaxWidth().height(nameplateHeight),
                                     trailing = {
                                         val card = nameplateLookCard
@@ -372,7 +375,7 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                                 onTab = { adjustmentTab = it },
                                 state = state, settings = settings, importing = lutLoading, model = model,
                                 importLut = { lutPicker.launch(arrayOf("*/*")) },
-                                openMascotPicker = { showMascotPicker = true },
+                                openMascotPicker = { showBodyPicker = true },
                                 compositionState = compositionState)
                         }
                     } else {
@@ -391,7 +394,7 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
                                 onTab = { adjustmentTab = it },
                                 state = state, settings = settings, importing = lutLoading, model = model,
                                 importLut = { lutPicker.launch(arrayOf("*/*")) },
-                                openMascotPicker = { showMascotPicker = true },
+                                openMascotPicker = { showBodyPicker = true },
                                 compositionState = compositionState)
                         }
                     }
@@ -401,9 +404,9 @@ fun CameraScreen(activity: MainActivity, model: CameraViewModel = viewModel()) {
         }
     }
     if (showCapabilities) CapabilitiesDialog(state.capabilities, state.error, { showCapabilities = false })
-    if (showMascotPicker) MascotPicker(settings.mascotCamera, settings.captureOrientation,
-        model::setMascotCamera, model::setCaptureOrientation,
-        onDiagnostics = { showCapabilities = true }, onDismiss = { showMascotPicker = false })
+    if (showBodyPicker) BodyPicker(settings.cameraBody, settings.nameplateHidden, settings.captureOrientation,
+        model::setCameraBody, model::setNameplateHidden, model::setCaptureOrientation,
+        onDiagnostics = { showCapabilities = true }, onDismiss = { showBodyPicker = false })
 }
 
 @Composable
@@ -768,20 +771,24 @@ private fun Viewfinder(
                 // Single quiet corner entry: off -> histogram -> histogram + exposure readout -> off.
                 OsdCycleButton(osdMode, model::cycleViewfinderOsd)
                 Spacer(Modifier.weight(1f))
-                OverlayPill(
-                    label = "姿势",
-                    enabled = true, description = "姿势助手开关",
-                    selected = settings.poseAssistantEnabled,
-                    onClick = { model.setPoseAssistantEnabled(!settings.poseAssistantEnabled) })
-                OverlayPill(
-                    label = if (!compositionState.isRequestRunning) "构图" else "分析中",
-                    enabled = state.isReady && !compositionState.isRequestRunning,
-                    description = "分析一次构图",
-                    onClick = model::requestComposition)
-                OverlayPill(
-                    label = if (settings.compositionRealtime) "实时 · 开" else "实时",
-                    enabled = true, description = "实时构图开关", selected = settings.compositionRealtime,
-                    onClick = { model.setCompositionRealtime(!settings.compositionRealtime) })
+                // 快拍模式: the AI row does not exist — pose/composition/realtime live only in
+                // pro mode, which is one tap away from the bottom-left quick toggle.
+                if (!settings.quickShotMode) {
+                    OverlayPill(
+                        label = "姿势",
+                        enabled = true, description = "姿势助手开关",
+                        selected = settings.poseAssistantEnabled,
+                        onClick = { model.setPoseAssistantEnabled(!settings.poseAssistantEnabled) })
+                    OverlayPill(
+                        label = if (!compositionState.isRequestRunning) "构图" else "分析中",
+                        enabled = state.isReady && !compositionState.isRequestRunning,
+                        description = "分析一次构图",
+                        onClick = model::requestComposition)
+                    OverlayPill(
+                        label = if (settings.compositionRealtime) "实时 · 开" else "实时",
+                        enabled = true, description = "实时构图开关", selected = settings.compositionRealtime,
+                        onClick = { model.setCompositionRealtime(!settings.compositionRealtime) })
+                }
                 val focusLabel = when {
                     manualFocus -> "MF"
                     state.isFocusLocked -> "AF-L"
@@ -810,7 +817,8 @@ private fun Viewfinder(
             // layout. It used to share the black control band with the shoulder strip in
             // framed mode, but the band has no slack once the fixed override-chip slot is
             // reserved, so the card collided with the meter readout (T118).
-            exposureAdviceCard?.let { card ->
+            // T121: AI hints are suppressed entirely in 快拍模式.
+            if (!settings.quickShotMode) exposureAdviceCard?.let { card ->
                 ExposureAdviceCardView(card, model::dismissExposureAdvice,
                     Modifier.align(Alignment.TopStart).padding(start = 10.dp, top = systemBarTop + 100.dp))
             }
@@ -827,89 +835,75 @@ private fun Viewfinder(
                     ?: badgePreset.displayName
                 FilmFrameBadge(settings.filmId, badgePreset, badgeLabel, onOpenLooks,
                     Modifier.align(Alignment.TopEnd).padding(end = 10.dp, top = systemBarTop + badgeTop))
-                // Anchored to the film badge (T30): suggest only, tap to preview, × to dismiss.
-                lookAdviceCard?.let { card ->
-                    LookAdviceCardView(card,
+                // T121: same 30dp single-line chip as the nameplate row (the old wide card
+                // covered too much picture); never shown in 快拍模式.
+                if (!settings.quickShotMode) lookAdviceCard?.let { card ->
+                    NameplateLookChip(card,
                         onTry = model::trySuggestedLook,
                         onKeep = model::keepSuggestedLook,
                         onRevert = model::revertSuggestedLook,
                         onDismiss = model::dismissLookAdvice,
                         Modifier.align(Alignment.TopEnd)
-                            .padding(end = 10.dp, top = systemBarTop + badgeTop + 56.dp))
+                            .padding(end = 10.dp, top = systemBarTop + badgeTop + 50.dp))
                 }
             }
             // The DSLR-style numeric readout (mode/aperture/shutter/ISO/EV) is now the
-            // always-on shoulder strip above the shutter, where it never covers the picture.
-            // Advice card sits above the floating shutter/focal bar (clearance computed above).
-            // Compact by design: capped width, tight padding, single-line supporting rows so
-            // it never covers more than a corner of the frame (user feedback, 2026-10-19).
-            if (settings.compositionEnabled) {
-                // T115: the live pose card sits bottom-centre: 60dp bottom padding plus a card
-                // up to ~94dp tall (two-line supporting copy, legend row and progress bar).
-                // 112dp only cleared the card height, so the start-anchored composition card
-                // still overlapped its top ~20dp on portrait (user feedback: pose and
-                // composition hints overlap). Clear the full card plus a small gap. Landscape
-                // keeps separate horizontal slots (corner vs centre), so no lift there. The
-                // gap stays constant in the ready phase even though the pose card shrinks, to
-                // avoid visible reflow.
+            // T121: composition hint is one 26dp single-line edge pill — never a multi-line
+            // card covering the frame. One line carries the executable move; the model text
+            // and timing stay available via semantics / long-press preview. Absent entirely
+            // in 快拍模式 (the analysis source is unbound there anyway).
+            if (!settings.quickShotMode && settings.compositionEnabled) {
+                // Lift over the pose card (bottom-centre, ~168dp in portrait) and over the
+                // bottom-left quick/pro toggle (~58dp). Landscape keeps separate slots.
                 val poseCardVisible = settings.poseAssistantEnabled && poseState.live && activeTrial == null
                 val adviceBottom by animateDpAsState(
-                    floatingClearance + if (poseCardVisible && !landscape) 168.dp else 0.dp,
+                    floatingClearance + (if (poseCardVisible && !landscape) 172.dp else 56.dp),
                     animationSpec = tween(220, easing = FastOutSlowInEasing), label = "adviceCardBottom")
-                Column(Modifier.align(Alignment.BottomStart)
-                    .padding(start = 10.dp, bottom = adviceBottom + systemBarBottom)
-                    .graphicsLayer { alpha = adviceCardAlpha }
-                    .widthIn(max = 208.dp)
-                    .background(Color.Black.copy(alpha = .68f), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 6.dp)
-                    // T35: long-press the card to preview the suggested framing; releasing restores.
-                    // Consuming the down also stops the canvas underneath from tapping focus / AF-L.
-                    .pointerInput(compositionOverlay) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            down.consume()
-                            val held = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
-                            val box = compositionOverlay?.suggestion?.let {
-                                NormalizedBoundingBox(it.left, it.top, it.right, it.bottom)
-                            }
-                            if (box != null && CropTrial.from(box) != null) {
-                                trialCrop = box
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    if (event.changes.none { it.pressed }) break
+                val line = when {
+                    alignmentConfirmed -> "构图到位 · 可以拍了"
+                    else -> compositionOverlay?.suggestion?.let { it.actionText ?: it.modelText }
+                }
+                if (line != null) {
+                    val detail = compositionOverlay?.suggestion?.modelText
+                    Box(Modifier.align(Alignment.BottomStart)
+                        .padding(start = 10.dp, bottom = adviceBottom + systemBarBottom)
+                        .graphicsLayer { alpha = adviceCardAlpha }
+                        .heightIn(min = 26.dp).widthIn(max = 232.dp)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(Color.Black.copy(alpha = .62f))
+                        // T35: long-press the pill to preview the suggested framing; releasing
+                        // restores. Consuming the down also blocks tap-focus underneath.
+                        .pointerInput(compositionOverlay) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
+                                val held = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+                                val box = compositionOverlay?.suggestion?.let {
+                                    NormalizedBoundingBox(it.left, it.top, it.right, it.bottom)
                                 }
-                                trialCrop = null
+                                if (box != null && CropTrial.from(box) != null) {
+                                    trialCrop = box
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        if (event.changes.none { it.pressed }) break
+                                    }
+                                    trialCrop = null
+                                }
                             }
                         }
-                    }) {
-                    if (alignmentConfirmed) {
-                        // T40 closed loop: once the asked-for move is satisfied, the card stops
-                        // issuing instructions and states the achieved phase for as long as it
-                        // holds; drifting out of the band returns the move sentence automatically.
-                        Text("构图到位 · 可以拍了", color = Color(0xFF54C97E), fontSize = 11.sp,
-                            lineHeight = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-                    } else compositionOverlay?.suggestion?.let { s ->
-                        // T33: the executable move is the headline; terminology ("三分构图 · …")
-                        // stays as the supporting line. Styles whose copy is already a move
-                        // carry actionText = null and keep their single-line rendering.
-                        if (s.actionText != null) {
-                            Text(s.actionText, color = Color.White, fontSize = 11.sp,
-                                lineHeight = 14.sp, fontWeight = FontWeight.Medium,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis)
-                            Text(s.modelText, Modifier.padding(top = 1.dp),
-                                color = Color.White.copy(alpha = .72f), fontSize = 9.5.sp,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        } else {
-                            Text(s.modelText, color = Color.White, fontSize = 11.sp,
-                                lineHeight = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        .semantics {
+                            contentDescription = buildString {
+                                append(line)
+                                if (detail != null && detail != line) append("；").append(detail)
+                                append("；长按预览建议构图")
+                            }
                         }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.CenterStart) {
+                        Text(line, color = if (alignmentConfirmed) Color(0xFF54C97E) else Color.White,
+                            fontSize = 10.5.sp, lineHeight = 13.sp, fontWeight = FontWeight.Medium,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
-                    if (!alignmentConfirmed) compositionOverlay?.easterEgg?.let {
-                        Text(it, Modifier.padding(top = 1.dp), color = Color(0xFFE2FF79),
-                            fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    if (!alignmentConfirmed) Text(compositionTimingLabel(compositionState), Modifier.padding(top = 1.dp),
-                        color = Color.White.copy(alpha = .72f), fontSize = 9.sp, maxLines = 1,
-                        overflow = TextOverflow.Ellipsis)
                 }
             }
             val focusHint = when {
@@ -921,10 +915,15 @@ private fun Viewfinder(
             focusHint?.let { Text(it, Modifier.align(Alignment.BottomCenter)
                 .padding(bottom = floatingClearance + 8.dp + systemBarBottom),
                 color = Color.White, fontSize = 12.sp) }
+            // The quick/pro mode switch lives bottom-left in every layout: 快拍 (default)
+            // hides every AI overlay and unbinds its analysis sources; 专业 keeps them.
+            QuickShotToggle(settings.quickShotMode, model::setQuickShotMode,
+                Modifier.align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = floatingClearance + 2.dp + systemBarBottom))
             // Bottom-right movement arrow: a glanceable "which way do I nudge the camera"
             // cue derived from the same geometry/dead zones as the advice card sentence.
-            // Hidden in the green aligned phase and during the long-press trial zoom.
-            val moveGuide = if (!alignmentConfirmed && activeTrial == null)
+            // Hidden in the green aligned phase, the trial zoom, and 快拍模式.
+            val moveGuide = if (!settings.quickShotMode && !alignmentConfirmed && activeTrial == null)
                 suggestedBox?.let(MoveGuides::fromCrop) else null
             val arrowAlpha by animateFloatAsState(
                 if (moveGuide != null) 1f else 0f,
@@ -934,8 +933,8 @@ private fun Viewfinder(
                     Modifier.align(Alignment.BottomEnd)
                         .padding(end = 12.dp, bottom = floatingClearance + systemBarBottom))
             }
-            // T72 pose assistant. Hidden during the long-press trial zoom like the pill row.
-            if (settings.poseAssistantEnabled && activeTrial == null) {
+            // T72 pose assistant. Hidden in 快拍模式 and during the trial zoom.
+            if (!settings.quickShotMode && settings.poseAssistantEnabled && activeTrial == null) {
                 PoseOverlayLayer(poseState, settings.alignmentHapticEnabled, model::nextPose,
                     Modifier.fillMaxSize())
             }
@@ -1125,48 +1124,6 @@ private fun NameplateChipAction(
     }
 }
 
-/**
- * Realtime look-suggestion card, anchored under the film badge. Suggesting state: the
- * whole card is a tap-to-preview target with a separate × dismiss. Trying state: the look
- * is already applied as a preview, so the only exits are Keep or Revert (T30).
- * Used on landscape paths and when the portrait nameplate row is hidden.
- */
-@Composable
-private fun LookAdviceCardView(
-    card: LookAdviceCard,
-    onTry: () -> Unit,
-    onKeep: () -> Unit,
-    onRevert: () -> Unit,
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier
-            .widthIn(max = 224.dp)
-            .background(Color.Black.copy(alpha = .72f), RoundedCornerShape(8.dp))
-            .then(if (card.trying) Modifier else Modifier.clickable(role = Role.Button, onClick = onTry))
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Text(
-            (if (card.trying) "试用中 · " else "AI 建议 · ") + card.label,
-            color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Text(card.reason, Modifier.padding(top = 3.dp),
-            color = Color.White.copy(alpha = .82f), fontSize = 11.sp,
-            maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Row(Modifier.fillMaxWidth().padding(top = 2.dp),
-            horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-            if (card.trying) {
-                LookAdviceAction("还原", onRevert)
-                LookAdviceAction("保留", onKeep, emphasized = true)
-            } else {
-                LookAdviceAction("×", onDismiss, description = "忽略此建议")
-                LookAdviceAction("试用", onTry, emphasized = true, description = "试用 ${card.label}")
-            }
-        }
-    }
-}
-
 @Composable
 private fun LookAdviceAction(
     label: String,
@@ -1187,21 +1144,58 @@ private fun LookAdviceAction(
 }
 
 /**
- * Exposure hint card under the HDF button. Suggest-only: no button changes exposure,
- * the × dismisses for the rest of the session (T31).
+ * T121 compact exposure hint: a single-line 26dp pill under the HDF button — the old
+ * two-line card covered too much picture. Suggest-only; × dismisses for the session (T31).
  */
 @Composable
 private fun ExposureAdviceCardView(card: ExposureAdviceCard, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
     Row(
         modifier
-            .widthIn(max = 210.dp)
-            .background(Color.Black.copy(alpha = .72f), RoundedCornerShape(8.dp))
-            .padding(start = 10.dp, end = 2.dp, top = 7.dp, bottom = 7.dp),
+            .heightIn(min = 26.dp).widthIn(max = 232.dp)
+            .clip(RoundedCornerShape(13.dp))
+            .background(Color.Black.copy(alpha = .62f))
+            .padding(start = 10.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(card.message, Modifier.weight(1f).padding(end = 4.dp),
-            color = Color.White, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(card.message, Modifier.weight(1f, fill = false).padding(end = 4.dp),
+            color = Color.White, fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         LookAdviceAction("×", onDismiss, description = "忽略曝光提示")
+    }
+}
+
+/**
+ * Bottom-left mode switch. 快拍 (default): pure camera — no pose/composition/AI overlays,
+ * analysis sources unbound; looks/filters and HDF stay. 专业: every assistant available.
+ */
+@Composable
+private fun QuickShotToggle(on: Boolean, onToggle: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        val tint = if (on) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = .85f)
+        Box(Modifier.size(42.dp).clip(CircleShape)
+            .background(if (on) MaterialTheme.colorScheme.primary.copy(alpha = .20f)
+                else Color.Black.copy(alpha = .34f))
+            .border(1.dp, if (on) MaterialTheme.colorScheme.primary.copy(alpha = .85f)
+                else Color.White.copy(alpha = .22f), CircleShape)
+            .clickable(role = Role.Switch) { onToggle(!on) }
+            .semantics {
+                contentDescription = if (on)
+                    "快拍模式已开启：姿势、构图与 AI 建议已隐藏，点按切换专业模式"
+                else "专业模式：姿势、构图与 AI 建议可用，点按切换快拍模式"
+                stateDescription = if (on) "快拍" else "专业"
+                this.selected = on
+            }, contentAlignment = Alignment.Center) {
+            Canvas(Modifier.size(18.dp)) {
+                // Single-stroke lightning bolt.
+                val w = 2.4.dp.toPx()
+                val p = listOf(Offset(10.5f, 1f), Offset(3.5f, 9.5f), Offset(8.2f, 9.5f),
+                    Offset(7f, 17f), Offset(14.5f, 7.5f), Offset(9.6f, 7.5f), Offset(10.5f, 1f))
+                for (i in 0 until p.size - 1) {
+                    drawLine(tint, p[i], p[i + 1], w, cap = StrokeCap.Round)
+                }
+            }
+        }
+        Text(if (on) "快拍" else "专业", fontSize = 9.sp,
+            color = Color.White.copy(alpha = .85f), maxLines = 1)
     }
 }
 
@@ -1352,8 +1346,12 @@ private fun ViewfinderOverlayBar(
     openPhoto: (Uri) -> Unit,
     framed: Boolean = false,
 ) {
-    val focalLengths = listOf(FocalLength.MM28, FocalLength.MM35, FocalLength.MM50)
+    // T121: the focal set belongs to the active body (GR 28/40, X100VI 35/50, Rollei 35
+    // just 35…), intersected with what the phone's digital crop actually supports.
+    val bodyFocalLengths = BodyCatalog.focalLengths(BodyCatalog.resolve(settings.cameraBody))
+    val focalLengths = bodyFocalLengths
     val supportedFocalLengths = state.capabilities?.focalLengthOptions.orEmpty()
+    val quickShot = settings.quickShotMode
     val exposureMode = state.settings.exposureMode
     val ev = state.settings.exposureCompensationIndex * (state.capabilities?.exposureCompensationStepEv ?: 0.0)
     val wbName = state.settings.whiteBalance.takeIf { it != WhiteBalanceMode.AUTO }?.displayName
@@ -1398,8 +1396,8 @@ private fun ViewfinderOverlayBar(
             if (framed) HorizontalDivider(thickness = .8.dp, color = Color.White.copy(alpha = .07f))
             // All slack collects above the controls; the shutter group is bottom-anchored.
             if (framed) Spacer(Modifier.weight(1f))
-            // Always-on DSLR shoulder strip: live P/S meter values, mode and EV popups.
-            ExposureShoulderStrip(state, model,
+            // 快拍模式 hides the DSLR readout for a plain camera-back; pro mode keeps it.
+            if (!quickShot) ExposureShoulderStrip(state, model,
                 Modifier.padding(bottom = if (framed) 5.dp else 4.dp))
             // Active manual overrides. Framed portrait keeps a constant-height slot so
             // chips fade in/out instead of pushing the shutter down; landscape keeps the
@@ -1433,7 +1431,8 @@ private fun ViewfinderOverlayBar(
             }
         // Focal lengths: the one pro control worth keeping on the capture screen.
         // In framed mode it belongs to the shutter group with a fixed, deliberate gap.
-        Row(Modifier.padding(bottom = if (framed) 14.dp else 6.dp).clip(RoundedCornerShape(22.dp))
+        // Fixed-lens bodies with a single frame (禄来 35) show no row at all.
+        if (focalLengths.size > 1) Row(Modifier.padding(bottom = if (framed) 14.dp else 6.dp).clip(RoundedCornerShape(22.dp))
             .background(Color.Black.copy(alpha = .42f)).padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
             focalLengths.forEach { focal ->
@@ -1692,7 +1691,8 @@ private fun ShootingControls(
     latestPhoto: Uri?,
     openPhoto: (Uri) -> Unit,
 ) {
-    val focalLengths = listOf(FocalLength.MM28, FocalLength.MM35, FocalLength.MM50)
+    val body = BodyCatalog.resolve(settings.cameraBody)
+    val focalLengths = BodyCatalog.focalLengths(body)
     val capabilities = state.capabilities
     val supportedFocalLengths = capabilities?.focalLengthOptions.orEmpty()
     val minimumFocalWidth = maxOf(48.dp, (48f * LocalDensity.current.fontScale).dp)
@@ -1700,7 +1700,7 @@ private fun ShootingControls(
         capabilities == null -> "焦段信息尚不可用"
         focalLengths.none { it in supportedFocalLengths } && state.settings.focalLength == FocalLength.NATIVE ->
             if (capabilities.nativeEquivalentFocalLengthMm == null) "焦段信息不可用 · 当前为原生视角"
-            else "三档视角暂不可用 · 当前为原生视角"
+            else "当前机型的焦段暂不可用 · 当前为原生视角"
         focalLengths.any { it !in supportedFocalLengths } -> "灰色视角暂不可用"
         else -> null
     }
@@ -1712,6 +1712,12 @@ private fun ShootingControls(
         horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
             BoxWithConstraints(Modifier.weight(1f)) {
+                if (focalLengths.size == 1) {
+                    Text("${focalLengths.first().label} 定焦",
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontFamily = FontFamily.Monospace, fontSize = 12.sp, maxLines = 1)
+                } else {
                 val distribute = maxWidth >= minimumFocalWidth * 3 + 8.dp
                 Row(if (distribute) Modifier.fillMaxWidth() else Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1733,6 +1739,7 @@ private fun ShootingControls(
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
+                }
                 }
             }
             TextButton(onClick = {
@@ -1774,16 +1781,16 @@ private fun ShootingControls(
         if (adjustmentTab != AdjustmentTab.LOOK) {
             Row(Modifier.fillMaxWidth().height(48.dp).horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-                // This chip opens the FILM section, so its empty-state label must say 胶片 —
-                // it used to read 影调 while opening the film list.
-                ControlButton(FilmRegistry.find(settings.filmId)?.displayName ?: "胶片", settings.filmId != null,
-                    enabled = loaded, onClick = { onTab(AdjustmentTab.FILM) })
-                // Keep the collapsed surface camera-like: a few high-frequency choices
-                // are visible, while the complete recipe catalog remains in the panel.
+                // T121: film section only exists on bodies that allow it (GR has none).
+                if (BodyCatalog.supportsFilmRolls(body)) {
+                    // This chip opens the FILM section, so its empty-state label says 胶片.
+                    ControlButton(FilmRegistry.find(settings.filmId)?.displayName ?: "胶片", settings.filmId != null,
+                        enabled = loaded, onClick = { onTab(AdjustmentTab.FILM) })
+                }
+                // Keep the collapsed surface camera-like: the active body's own high-frequency
+                // looks, never another brand's simulations.
                 val quickPresets = buildList {
-                    add(ColorPreset.ORIGINAL)
-                    add(ColorPreset.POSITIVE)
-                    add(ColorPreset.NEGATIVE)
+                    addAll(BodyCatalog.presets(body).take(3))
                     ColorPreset.entries.firstOrNull { it.name == settings.preset }?.let { selected ->
                         if (selected !in this) add(selected)
                     }
@@ -1897,9 +1904,17 @@ private fun AdjustmentPanel(
 ) {
     val contentScroll = rememberScrollState()
     LaunchedEffect(tab) { contentScroll.scrollTo(0) }
+    // T121: the 胶片 tab exists only on bodies that have a film section (理光 GR does not).
+    val activeBody = BodyCatalog.resolve(settings.cameraBody)
+    val tabs = buildList {
+        add(AdjustmentTab.LOOK)
+        if (BodyCatalog.supportsFilmRolls(activeBody)) add(AdjustmentTab.FILM)
+        add(AdjustmentTab.WHITE_BALANCE)
+        add(AdjustmentTab.SHOOTING)
+    }
     Column(modifier.clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
         Row(Modifier.fillMaxWidth().height(48.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.SpaceEvenly) {
-            AdjustmentTab.entries.forEach { item ->
+            tabs.forEach { item ->
                 ControlButton(item.label, item == tab, onClick = { onTab(item) })
             }
         }
@@ -1907,7 +1922,8 @@ private fun AdjustmentPanel(
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(contentScroll).padding(horizontal = 12.dp)) {
             when (tab) {
                 AdjustmentTab.LOOK -> LookAdjustments(settings, importing, model, importLut)
-                AdjustmentTab.FILM -> FilmAdjustments(settings, model)
+                AdjustmentTab.FILM -> if (BodyCatalog.supportsFilmRolls(activeBody)) FilmAdjustments(settings, model)
+                    else LookAdjustments(settings, importing, model, importLut)
                 AdjustmentTab.WHITE_BALANCE -> WhiteBalanceAdjustments(state, settings, model)
                 AdjustmentTab.SHOOTING -> ShootingAdjustments(state, settings, model, openMascotPicker, compositionState)
             }
@@ -1917,7 +1933,9 @@ private fun AdjustmentPanel(
 
 @Composable
 private fun LookAdjustments(settings: AppSettings, importing: Boolean, model: CameraViewModel, importLut: () -> Unit) {
-    CameraLookPicker(settings, model::setPreset)
+    CameraLookPicker(settings,
+        onBody = { model.setCameraBody(BodyCatalog.id(it)) },
+        onPreset = model::setPreset)
     var parameter by remember { mutableStateOf(LookParameter.SATURATION) }
     val look = settings.activeLook
     val value = when (parameter) {
@@ -2283,19 +2301,30 @@ private fun ShootingAdjustments(state: CameraState, settings: AppSettings, model
             }
         }
     }
+    // T121: 快拍模式 is the master simplicity switch; the toggle also lives on the
+    // viewfinder bottom-left, mirrored here so the sheet stays a complete settings surface.
+    ToggleRow("快拍模式", settings.quickShotMode) { model.setQuickShotMode(it) }
+    Text("开启后只保留拍照、滤镜、HDF 与基础拍摄参数；姿势引导、构图辅助与 AI 建议全部隐藏且不读取画面。",
+        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     ToggleRow("三分网格", settings.grid) { model.toggleGrid() }
     ToggleRow("水平仪", settings.level) { model.toggleLevel() }
-    ToggleRow("影调建议", settings.lookAdviceEnabled) { model.setLookAdviceEnabled(it) }
-    Text("根据取景画面的光线与色彩，偶尔推荐合适的胶片或影调；只建议，不会自动更改。点取景器卡片可试用，也能一键还原。",
-        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    ToggleRow("曝光提示", settings.exposureAdviceEnabled) { model.setExposureAdviceEnabled(it) }
-    Text("高光大面积过亮或暗部太黑时给出 EV 调整方向，明暗反差都大时提示开启 HDF；只建议，不会自动改曝光。",
-        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    TextButton(onClick = openMascotPicker, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-        Text("相机设置", fontSize = 12.sp)
+    if (settings.quickShotMode) {
+        Text("专业功能（姿势引导、构图辅助、影调与曝光建议）已随快拍模式关闭；关掉快拍模式即可恢复。",
+            Modifier.padding(top = 8.dp),
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    } else {
+        ToggleRow("影调建议", settings.lookAdviceEnabled) { model.setLookAdviceEnabled(it) }
+        Text("根据取景画面的光线与色彩，偶尔推荐合适的胶片或影调；只建议，不会自动更改。点取景器卡片可试用，也能一键还原。",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ToggleRow("曝光提示", settings.exposureAdviceEnabled) { model.setExposureAdviceEnabled(it) }
+        Text("高光大面积过亮或暗部太黑时给出 EV 调整方向，明暗反差都大时提示开启 HDF；只建议，不会自动改曝光。",
+            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        CompositionAssistantControls(compositionState, settings, model, state)
+        PoseAssistantControls(poseState, settings, model)
     }
-    CompositionAssistantControls(compositionState, settings, model, state)
-    PoseAssistantControls(poseState, settings, model)
+    TextButton(onClick = openMascotPicker, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+        Text("相机机型与铭牌设置", fontSize = 12.sp)
+    }
     Text("参数自动记忆。音量键可直接拍照。", Modifier.padding(vertical = 10.dp),
         style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
