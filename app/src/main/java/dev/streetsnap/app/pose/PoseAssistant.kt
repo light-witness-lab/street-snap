@@ -47,6 +47,9 @@ internal class PoseAssistant(
     private val appContext = context.applicationContext
     private val store = ModelStore(appContext)
     private val model = PoseModelCatalog.lite
+    // 完整权重构建会在 assets 内预置 .task：探测时自动导入，与 CompositionAssistant 的
+    // d1 bundled 通道同构；用户显式删除后该开关置位，不再自动导回。
+    private val modelPreferences = appContext.getSharedPreferences("pose-models", Context.MODE_PRIVATE)
     private val coach = PoseCoach()
     // T108: landmark jitter filter; guarded by coachLock together with the coach state.
     private val smoother = PoseSmoother()
@@ -94,7 +97,7 @@ internal class PoseAssistant(
                 if (closed) return@withLock
                 val config = configuration
                 val active = config?.enabled == true && config.foreground
-                val installedFile = withContext(Dispatchers.IO) { store.installedPose(model) }
+                val installedFile = checkInstalled()
                 if (closed) return@withLock
                 val liveReady = if (active && installedFile != null) {
                     startLive(installedFile)
@@ -114,7 +117,13 @@ internal class PoseAssistant(
         }
     }
 
-    private suspend fun checkInstalled() = withContext(Dispatchers.IO) { store.installedPose(model) }
+    private suspend fun checkInstalled() = withContext(Dispatchers.IO) {
+        if (!modelPreferences.getBoolean("bundled-disabled-${model.id}", false)) {
+            store.installBundledPose(model) ?: store.installedPose(model)
+        } else {
+            store.installedPose(model)
+        }
+    }
 
     /** Returns true when the live source is bound; false falls back to demo mode. */
     private suspend fun startLive(modelFile: java.io.File): Boolean {
@@ -228,6 +237,7 @@ internal class PoseAssistant(
                 val file = store.downloadPose(model) { downloaded, total ->
                     _state.update { it.copy(downloadedBytes = downloaded, totalBytes = total) }
                 }
+                modelPreferences.edit().remove("bundled-disabled-${model.id}").apply()
                 _state.update { it.copy(modelStatus = PoseModelStatus.INSTALLED, installError = null) }
                 reconfigure()
             } catch (error: Exception) {
@@ -244,7 +254,7 @@ internal class PoseAssistant(
         installJob?.cancel()
         installJob = null
         scope.launch {
-            val installed = withContext(Dispatchers.IO) { store.installedPose(model) }
+            val installed = checkInstalled()
             _state.update {
                 it.copy(
                     modelStatus = if (installed != null) PoseModelStatus.INSTALLED else PoseModelStatus.ABSENT,
@@ -257,7 +267,10 @@ internal class PoseAssistant(
     fun removeModel() {
         installJob?.cancel()
         scope.launch {
-            withContext(Dispatchers.IO) { store.removePose(model) }
+            withContext(Dispatchers.IO) {
+                modelPreferences.edit().putBoolean("bundled-disabled-${model.id}", true).apply()
+                store.removePose(model)
+            }
             _state.update { it.copy(modelStatus = PoseModelStatus.ABSENT) }
             // Reconfigure observes the missing file: stops live and falls back to demo.
             reconfigure()

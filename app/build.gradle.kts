@@ -102,6 +102,29 @@ if (stageEdgeModelAssets != null) {
     }
     tasks.named("preBuild").configure { dependsOn(clearStagedEdgeModelAssets) }
 }
+// Optional local-only pose weight staging, same contract as edgeModelDir: the
+// property is absent from normal builds, the .task is copied into ignored app
+// assets (pose-models/<id>/model.task, the layout ModelStore.installBundledPose
+// imports from), and ordinary builds clear any leftover staged file.
+val poseModelFile = providers.gradleProperty("poseModelFile").orNull?.let { rootProject.file(it) }
+    ?.also { source ->
+        require(source.isFile) { "poseModelFile must be an existing .task file: $source" }
+        // Pinned against PoseModelCatalog.lite.bytes (5.8MB fp16 lite tier).
+        require(source.length() == 5_777_746L) { "pose model size mismatch: ${source.length()}" }
+    }
+if (poseModelFile != null) {
+    val stagePoseModelAsset = tasks.register<Copy>("stagePoseModelAsset") {
+        from(poseModelFile)
+        into(layout.projectDirectory.dir("src/main/assets/pose-models/pose_landmarker_lite"))
+        rename { "model.task" }
+    }
+    tasks.named("preBuild").configure { dependsOn(stagePoseModelAsset) }
+} else {
+    val clearStagedPoseModelAssets = tasks.register<Delete>("clearStagedPoseModelAssets") {
+        delete(layout.projectDirectory.dir("src/main/assets/pose-models"))
+    }
+    tasks.named("preBuild").configure { dependsOn(clearStagedPoseModelAssets) }
+}
 val distributionSigning = listOf(
     "ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD",
 ).associateWith { providers.environmentVariable(it).orNull?.takeIf(String::isNotBlank) }
@@ -167,6 +190,11 @@ android {
     buildFeatures {
         compose = true
         resValues = true
+    }
+    androidResources {
+        // Weight binaries are already entropy-coded; store them uncompressed so asset
+        // import streams bytes straight out of the APK instead of inflating ~440MB.
+        noCompress += listOf("onnx", "onnx_data", "task")
     }
 }
 

@@ -13,6 +13,7 @@ captures/
 
 # Optional locally staged edge-model assets. Model weights stay outside source control.
 app/src/main/assets/edge-models/
+app/src/main/assets/pose-models/
 
 # Local credentials and environment overrides
 .env
