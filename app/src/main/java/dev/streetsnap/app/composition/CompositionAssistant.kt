@@ -618,7 +618,6 @@ internal class CompositionAssistant(context: Context, private val scope: Corouti
                 // them. The session still owns the published [runtime] and closes it exactly
                 // once in finally; a runtime built for a stale generation closes itself.
                 suspend fun ensureRuntimePublished(model: D1ModelEntry) {
-                    var created: CandidateRanker? = null
                     try {
                         val installed = withContext(Dispatchers.IO) {
                             if (!modelPreferences.getBoolean("bundled-disabled-${model.id}", false)) {
@@ -627,10 +626,7 @@ internal class CompositionAssistant(context: Context, private val scope: Corouti
                                 store.installedD1(model)
                             }
                         }
-                        if (!isCurrentSession()) {
-                            withContext(Dispatchers.IO) { runCatching { created?.close() } }
-                            return
-                        }
+                        if (!isCurrentSession()) return
                         if (_state.value.install !in listOf(ModelInstallStatus.PREPARING, ModelInstallStatus.DOWNLOADING,
                                 ModelInstallStatus.REMOVING, ModelInstallStatus.AVAILABLE)) {
                             _state.update { it.copy(install = if (installed == null) ModelInstallStatus.ABSENT else ModelInstallStatus.INSTALLED,
@@ -643,21 +639,15 @@ internal class CompositionAssistant(context: Context, private val scope: Corouti
                             return
                         }
                         val builtAt = SystemClock.elapsedRealtime()
-                        val engine = withContext(Dispatchers.IO) {
+                        val engine = createSessionResource(isCurrent = ::isCurrentSession) {
                             D1OmniRuntime(installed)
-                        }.also { created = it }
+                        }?.also { runtime = it } ?: return
                         val readyMs = SystemClock.elapsedRealtime() - builtAt
                         Log.i("StreetSnapComposition",
                             "model_runtime_ready_ms=$readyMs model=${model.id}")
-                        if (!isCurrentSession()) {
-                            withContext(Dispatchers.IO) { runCatching { engine.close() } }
-                            return
-                        }
-                        runtime = engine
                         runtimeReady.complete(engine)
                         _state.update { it.copy(runtimeReadyMs = readyMs, runtimeLabel = engine.runtimeLabel) }
                     } catch (cancelled: CancellationException) {
-                        withContext(Dispatchers.IO) { runCatching { created?.close() } }
                         throw cancelled
                     } catch (error: Exception) {
                         if (isCurrentSession()) {

@@ -303,7 +303,6 @@ internal class GlRenderer(private val externalInput: Boolean) : Closeable {
             }
         }
         GLES30.glUniform4f(uniform("uTile"), 0f, 0f, 1f, 1f)
-        GLES30.glUniform1i(uniform("uPass"), 1)
         // Extract the same graded near-clipping highlights into both sheets; bilinear
         // downsampling gives the wide sheet a free box-filter pre-blur.
         extractHighlights(bloomBuffers[0], bloomWidth, bloomHeight)
@@ -348,6 +347,7 @@ internal class GlRenderer(private val externalInput: Boolean) : Closeable {
 
     /** Pass 1: graded highlight extraction into [fbo] at the pair's own resolution. */
     private fun extractHighlights(fbo: Int, targetWidth: Int, targetHeight: Int) {
+        GLES30.glUniform1i(uniform("uPass"), 1)
         GLES30.glViewport(0, 0, targetWidth, targetHeight)
         GLES30.glUniform2f(uniform("uBloomSize"), targetWidth.toFloat(), targetHeight.toFloat())
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)

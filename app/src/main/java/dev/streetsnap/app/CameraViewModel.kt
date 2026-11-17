@@ -294,13 +294,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
      * [bodyId] is a BodyCatalog id; BodyCatalog.GENERAL_ID means the brand-neutral body.
      */
     fun setCameraBody(bodyId: String) {
-        val body = BodyCatalog.resolve(bodyId)
-        val current = _settings.value
-        val coerced = coerceLookForBody(body, current.preset, current.filmId, current.focalLength, lut != null)
-        update {
-            it.copy(cameraBody = BodyCatalog.id(body),
-                preset = coerced.preset, filmId = coerced.filmId, focalLength = coerced.focalLength)
-        }
+        applyCameraBodySettings(_settings.value.withCameraBody(bodyId, lutLoaded = lut != null))
+    }
+
+    private fun applyCameraBodySettings(next: AppSettings) {
+        val body = BodyCatalog.resolve(next.cameraBody)
+        update { next }
         applyColor()
         // A suggestion card from the old body could now be cross-brand (e.g. GR 正片 on
         // Fuji); drop it together with any in-flight trial. Discard the trial WITHOUT
@@ -308,19 +307,19 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         trialLook = null
         _lookAdviceCard.value = null
         pendingLookTarget = null
-        cameraAction {
+        latestCameraAction("body", debounceMs = 0L) {
             val caps = camera.state.value.capabilities
             val bodyOptions = BodyCatalog.focalLengths(body)
             val supported = caps?.let { bodyOptions.intersect(it.focalLengthOptions.toSet()) } ?: bodyOptions.toSet()
-            val target = FocalLength.fromMm(coerced.focalLength)
+            val target = FocalLength.fromMm(next.focalLength)
             val chosen = target?.takeIf { it in supported }
-                ?: supported.minByOrNull { kotlin.math.abs((it.equivalentMm ?: 0) - coerced.focalLength) }
+                ?: supported.minByOrNull { kotlin.math.abs((it.equivalentMm ?: 0) - next.focalLength) }
                 ?: caps?.focalLengthOptions?.firstOrNull()
             if (chosen != null) {
                 composition.invalidateView()
                 camera.setFocalLength(chosen)
-                composition.updateFocalLength(chosen.equivalentMm ?: coerced.focalLength)
-                chosen.equivalentMm?.takeIf { it != coerced.focalLength }?.let { reconciled ->
+                composition.updateFocalLength(chosen.equivalentMm ?: next.focalLength)
+                chosen.equivalentMm?.takeIf { it != next.focalLength }?.let { reconciled ->
                     update { it.copy(focalLength = reconciled) }
                 }
             }
@@ -662,9 +661,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     /** The analysis stream is bound for the histogram OSD or realtime exposure hints. */
     private fun syncMeter() {
-        val wanted = _settingsLoaded.value && foreground && (
-            _settings.value.viewfinderOsd != ViewfinderOsd.OFF ||
-                (_settings.value.exposureAdviceEnabled && !_settings.value.quickShotMode))
+        val wanted = _settingsLoaded.value && foreground && _settings.value.needsLumaAnalysis
         lumaMeter.active = wanted
         if (!wanted) _histogram.value = null
     }
@@ -721,8 +718,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 lut = result.first
                 colors.setCustomLut(lut)
-                update { it.copy(preset = ColorPreset.CUSTOM.name, filmId = null, lutName = result.second.take(120)) }
-                applyColor()
+                applyCameraBodySettings(_settings.value.withImportedLut(result.second))
                 onUserPickedLook()
                 notify("已导入 ${result.second}")
             } catch (error: Exception) {
@@ -763,10 +759,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun cameraAction(action: suspend () -> Unit) { viewModelScope.launch { runCamera(action) } }
-    private fun latestCameraAction(key: String, action: suspend () -> Unit) {
+    private fun latestCameraAction(key: String, debounceMs: Long = 45L, action: suspend () -> Unit) {
         controlJobs[key]?.cancel()
         controlJobs[key] = viewModelScope.launch {
-            delay(45)
+            delay(debounceMs)
             runCamera(action)
         }
     }

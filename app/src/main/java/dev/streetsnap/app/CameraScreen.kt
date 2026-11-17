@@ -540,7 +540,7 @@ private fun Viewfinder(
     }
     val osdMode = settings.viewfinderOsd
     val histogramWanted = ViewfinderOsd.showsHistogram(osdMode)
-    val meteringWanted = histogramWanted || settings.exposureAdviceEnabled
+    val meteringWanted = settings.needsLumaAnalysis
     val hasSize = width > 0 && height > 0
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     val manualFocus = state.settings.focusDistanceDiopters != null

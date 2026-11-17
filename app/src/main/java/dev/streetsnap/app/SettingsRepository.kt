@@ -100,6 +100,22 @@ data class AppSettings(
         ?: FilmRegistry.find(filmId)?.let { LookSettings.fromRecipe(it.defaults) }
         ?: LookSettings()
 
+    /** Shared by CameraX binding and meter activation so quick shot has no idle analysis stream. */
+    internal val needsLumaAnalysis: Boolean get() = ViewfinderOsd.showsHistogram(viewfinderOsd) ||
+        (exposureAdviceEnabled && !quickShotMode)
+
+    internal fun withCameraBody(bodyId: String, lutLoaded: Boolean): AppSettings {
+        val body = BodyCatalog.resolve(bodyId)
+        val coerced = coerceLookForBody(body, preset, filmId, focalLength, lutLoaded)
+        return copy(cameraBody = BodyCatalog.id(body), preset = coerced.preset,
+            filmId = coerced.filmId, focalLength = coerced.focalLength)
+    }
+
+    /** Apply to the latest settings after import completes; CUSTOM belongs to the general body. */
+    internal fun withImportedLut(name: String): AppSettings =
+        copy(preset = ColorPreset.CUSTOM.name, filmId = null, lutName = name.take(120))
+            .withCameraBody(BodyCatalog.GENERAL_ID, lutLoaded = true)
+
     fun updateLook(transform: (LookSettings) -> LookSettings) =
         copy(looks = looks + (activeLookKey to transform(activeLook)))
     fun resetLook() = copy(looks = looks - activeLookKey)

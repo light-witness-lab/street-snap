@@ -73,6 +73,50 @@ class SettingsJsonTest {
         assertEquals(7, recipe.whiteBalanceGreen)
     }
 
+    @Test fun importingLutOnEveryBodySurvivesRestartWithALegalFocalLength() {
+        for (body in CameraModel.entries) {
+            for (focalLength in body.focalMm) {
+                val before = AppSettings(
+                    cameraBody = body.name, preset = body.presets.first().name,
+                    focalLength = focalLength,
+                    filmId = "DAY_01".takeIf { body.supportsFilmRolls },
+                    looks = mapOf("CUSTOM" to LookSettings(contrast = .5f)),
+                    whiteBalance = "CLOUDY", hdfEnabled = true,
+                )
+                val imported = before.withImportedLut("Street.cube")
+                val loaded = SettingsJson.decode(SettingsJson.encode(imported))
+
+                assertEquals(imported, loaded)
+                assertEquals(BodyCatalog.GENERAL_ID, loaded.cameraBody)
+                assertEquals("CUSTOM", loaded.preset)
+                assertNull(loaded.filmId)
+                assertEquals("Street.cube", loaded.lutName)
+                assertEquals(if (focalLength in listOf(28, 35, 50)) focalLength else 28,
+                    loaded.focalLength)
+                assertEquals(before.looks, loaded.looks)
+                assertEquals("CLOUDY", loaded.whiteBalance)
+                assertTrue(loaded.hdfEnabled)
+                assertEquals(ColorPreset.CUSTOM, loaded.colorRecipe().preset)
+            }
+        }
+    }
+
+    @Test fun lutImportUsesCurrentSettingsAfterABodyChange() {
+        // The document provider may take time: the user can switch body and adjust controls
+        // before the import finishes. Its completion must preserve those latest settings.
+        val current = AppSettings(focalLength = 40)
+            .withCameraBody("FUJIFILM_X100VI", lutLoaded = false)
+            .copy(focalLength = 50, exposure = 2, grid = false)
+        val loaded = SettingsJson.decode(SettingsJson.encode(current.withImportedLut("New.cube")))
+
+        assertEquals(BodyCatalog.GENERAL_ID, loaded.cameraBody)
+        assertEquals("CUSTOM", loaded.preset)
+        assertEquals("New.cube", loaded.lutName)
+        assertEquals(50, loaded.focalLength)
+        assertEquals(2, loaded.exposure)
+        assertFalse(loaded.grid)
+    }
+
     @Test fun outOfRangeAndNonFiniteStoredValuesCannotReachShader() {
         val json = """{"version":2,"preset":"POWDER_BLUE","hdfStrength":-3,"whiteBalance":"UNKNOWN","whiteBalanceAmber":99,"whiteBalanceGreen":-99,"looks":{"POWDER_BLUE":{"saturation":12,"hue":-12,"sharpness":"NaN","grain":"Infinity","highlights":0.25},"INVALID":{"contrast":1}}}"""
         val settings = SettingsJson.decode(json)

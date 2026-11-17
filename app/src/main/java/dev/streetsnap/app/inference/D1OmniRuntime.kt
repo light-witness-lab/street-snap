@@ -189,9 +189,15 @@ class D1OmniRuntime(private val installed: InstalledD1Model) : CandidateRanker {
             val side = minOf(source.width, source.height)
             val left = (source.width - side) / 2
             val top = (source.height - side) / 2
-            val cropped = Bitmap.createBitmap(source, left, top, side, side)
+            // Android may return `source` itself when the crop covers an already-square
+            // bitmap. Keep track of ownership so the caller's bitmap is never recycled
+            // by the temporary-frame cleanup below.
+            val cropped = if (source.width == source.height) source
+            else Bitmap.createBitmap(source, left, top, side, side)
             square = if (side == D1NaFlex.SIDE) cropped
-            else Bitmap.createScaledBitmap(cropped, D1NaFlex.SIDE, D1NaFlex.SIDE, true).also { cropped.recycle() }
+            else Bitmap.createScaledBitmap(cropped, D1NaFlex.SIDE, D1NaFlex.SIDE, true).also {
+                if (cropped !== source) cropped.recycle()
+            }
             created = true
         }
         try {
@@ -299,6 +305,10 @@ class D1OmniRuntime(private val installed: InstalledD1Model) : CandidateRanker {
                                         val logits = FloatArray(optionCount).also {
                                             requireNotNull(tensor.floatBuffer).get(it)
                                         }
+                                        // Record the decision stage before constructing the result so
+                                        // diagnostics and callers receive the actual latency instead
+                                        // of the initial zero value.
+                                        decisionMs = SystemClock.elapsedRealtime() - decisionStarted
                                         ranking = D1Decision.toRanking(
                                             logits,
                                             visionMs = visionMs,
@@ -313,7 +323,6 @@ class D1OmniRuntime(private val installed: InstalledD1Model) : CandidateRanker {
                     }
                 }
             }
-            decisionMs = SystemClock.elapsedRealtime() - decisionStarted
             ranking?.let { result ->
                 log("rank_selected=${result.selectedIndex} support=${result.support} margin=${result.margin} " +
                     "probabilities=${result.probabilities} raw_scores=${result.rawScores} " +
